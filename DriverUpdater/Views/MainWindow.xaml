@@ -1,0 +1,224 @@
+<Window x:Class="DriverUpdater.Views.MainWindow"
+        xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+        xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+        xmlns:d="http://schemas.microsoft.com/expression/blend/2008"
+        xmlns:mc="http://schemas.openxmlformats.org/markup-compatibility/2006"
+        xmlns:local="clr-namespace:DriverUpdater.Views"
+        xmlns:vm="clr-namespace:DriverUpdater.ViewModels"
+        xmlns:conv="clr-namespace:DriverUpdater.Converters"
+        mc:Ignorable="d"
+        Title="Driver Updater (Portable)" 
+        Height="800" Width="1100"
+        MinHeight="650" MinWidth="900"
+        WindowStartupLocation="CenterScreen"
+        Style="{StaticResource MainWindowStyle}"
+        Icon="/Resources/Icons/app.ico">
+
+    <Window.Resources>
+        <conv:BoolToVisibilityConverter x:Key="BoolToVis" />
+        <conv:StatusToColorConverter x:Key="StatusToColor" />
+        <conv:InstallStatusToColorConverter x:Key="InstallStatusToColor" />
+        <conv:InverseBoolConverter x:Key="InverseBoolConverter" />
+    </Window.Resources>
+
+    <Grid Margin="12">
+        <Grid.RowDefinitions>
+            <RowDefinition Height="Auto" />
+            <RowDefinition Height="Auto" />
+            <RowDefinition Height="*" />
+            <RowDefinition Height="Auto" />
+            <RowDefinition Height="Auto" />
+        </Grid.RowDefinitions>
+
+        <!-- Header -->
+        <Grid Grid.Row="0" Margin="0,0,0,12">
+            <Grid.ColumnDefinitions>
+                <ColumnDefinition Width="Auto" />
+                <ColumnDefinition Width="*" />
+                <ColumnDefinition Width="Auto" />
+            </Grid.ColumnDefinitions>
+            
+            <TextBlock Text="Driver Updater" FontSize="24" FontWeight="SemiBold" Foreground="{StaticResource TextPrimaryBrush}" 
+                       VerticalAlignment="Center" Margin="0,0,16,0" />
+            
+            <TextBlock Grid.Column="1" Text="Portable • No Installation Required" FontSize="12" Foreground="{StaticResource TextSecondaryBrush}" 
+                       VerticalAlignment="Center" Margin="0,4,0,0" />
+            
+            <StackPanel Grid.Column="2" Orientation="Horizontal" HorizontalAlignment="Right" VerticalAlignment="Center">
+                <Button Content="⚙ Settings" Style="{StaticResource SecondaryButtonStyle}" 
+                        Command="{Binding OpenSettingsCommand}" Margin="0,0,8,0" Padding="12,6" FontSize="12" />
+                <Button Content="📁 Data Folder" Style="{StaticResource SecondaryButtonStyle}" 
+                        Command="{Binding OpenDataFolderCommand}" Padding="12,6" FontSize="12" />
+            </StackPanel>
+        </Grid>
+
+        <!-- Source Selection Bar -->
+        <GroupBox Grid.Row="1" Style="{StaticResource ModernGroupBoxStyle}" Header="Update Sources" Margin="0,0,0,8" Padding="8">
+            <WrapPanel Orientation="Horizontal" ItemWidth="200" ItemHeight="36">
+                <ItemsControl ItemsSource="{Binding SourceConfigs}">
+                    <ItemsControl.ItemsPanel>
+                        <ItemsPanelTemplate>
+                            <WrapPanel Orientation="Horizontal" ItemWidth="200" />
+                        </ItemsPanelTemplate>
+                    </ItemsControl.ItemsPanel>
+                    <ItemsControl.ItemTemplate>
+                        <DataTemplate>
+                            <CheckBox Style="{StaticResource ModernCheckBoxStyle}" 
+                                      Content="{Binding DisplayName}" 
+                                      IsChecked="{Binding IsEnabled, Mode=TwoWay}"
+                                      ToolTip="{Binding Description}"
+                                      Margin="4,2" />
+                        </DataTemplate>
+                    </ItemsControl.ItemTemplate>
+                </ItemsControl>
+            </WrapPanel>
+        </GroupBox>
+
+        <!-- Device List -->
+        <GroupBox Grid.Row="2" Style="{StaticResource ModernGroupBoxStyle}" Header="Devices with Available Updates" Margin="0,0,0,8">
+            <Grid>
+                <Grid.RowDefinitions>
+                    <RowDefinition Height="Auto" />
+                    <RowDefinition Height="*" />
+                </Grid.RowDefinitions>
+
+                <!-- Toolbar -->
+                <Grid Grid.Row="0" Margin="0,0,0,8">
+                    <Grid.ColumnDefinitions>
+                        <ColumnDefinition Width="Auto" />
+                        <ColumnDefinition Width="*" />
+                        <ColumnDefinition Width="Auto" />
+                    </Grid.ColumnDefinitions>
+
+                    <CheckBox Grid.Column="0" Content="Select All" IsThreeState="True" Style="{StaticResource ModernCheckBoxStyle}"
+                              IsChecked="{Binding SelectAll, Mode=TwoWay}" VerticalAlignment="Center" Margin="0,0,16,0" />
+
+                    <TextBlock Grid.Column="1" VerticalAlignment="Center" Foreground="{StaticResource TextSecondaryBrush}"
+                               Text="{Binding Devices.Count, StringFormat='{}Found {0} device(s) with updates'}" />
+
+                    <StackPanel Grid.Column="2" Orientation="Horizontal" HorizontalAlignment="Right">
+                        <TextBlock Text="Exclude classes:" VerticalAlignment="Center" Margin="0,0,8,0" Foreground="{StaticResource TextSecondaryBrush}" />
+                        <TextBox Style="{StaticResource ModernTextBoxStyle}" Width="200" 
+                                 Text="{Binding ExcludedClasses, Mode=TwoWay, UpdateSourceTrigger=PropertyChanged}"
+                                 ToolTip="Comma-separated device classes to ignore (e.g., USB, HIDClass)" />
+                    </StackPanel>
+                </Grid>
+
+                <!-- List View -->
+                <ListView Grid.Row="1" ItemsSource="{Binding Devices}" Style="{StaticResource ModernListViewStyle}"
+                          ScrollViewer.HorizontalScrollBarVisibility="Auto">
+                    <ListView.View>
+                        <GridView ColumnHeaderContainerStyle="{StaticResource ModernGridViewColumnHeaderStyle}">
+                            <GridViewColumn Header="☑" Width="36">
+                                <GridViewColumn.CellTemplate>
+                                    <DataTemplate>
+                                        <CheckBox IsChecked="{Binding IsSelected, Mode=TwoWay}" 
+                                                  VerticalAlignment="Center" HorizontalAlignment="Center"
+                                                  Style="{StaticResource ModernCheckBoxStyle}" />
+                                    </DataTemplate>
+                                </GridViewColumn.CellTemplate>
+                            </GridViewColumn>
+                            <GridViewColumn Header="Device" Width="320">
+                                <GridViewColumn.CellTemplate>
+                                    <DataTemplate>
+                                        <StackPanel Orientation="Vertical">
+                                            <TextBlock Text="{Binding DeviceName}" FontWeight="Medium" Foreground="{StaticResource TextPrimaryBrush}" />
+                                            <TextBlock Text="{Binding Manufacturer}" FontSize="11" Foreground="{StaticResource TextSecondaryBrush}" />
+                                            <TextBlock Text="{Binding DeviceClass}" FontSize="10" Foreground="{StaticResource TextDisabledBrush}" />
+                                        </StackPanel>
+                                    </DataTemplate>
+                                </GridViewColumn.CellTemplate>
+                            </GridViewColumn>
+                            <GridViewColumn Header="Status" Width="80">
+                                <GridViewColumn.CellTemplate>
+                                    <DataTemplate>
+                                        <Border Width="12" Height="12" CornerRadius="6" Margin="0,0,8,0"
+                                                Background="{Binding Status, Converter={StaticResource StatusToColor}}" 
+                                                ToolTip="{Binding Status}" HorizontalAlignment="Left" VerticalAlignment="Center" />
+                                    </DataTemplate>
+                                </GridViewColumn.CellTemplate>
+                            </GridViewColumn>
+                            <GridViewColumn Header="Current Version" Width="120">
+                                <GridViewColumn.CellTemplate>
+                                    <DataTemplate>
+                                        <TextBlock Text="{Binding CurrentVersion}" Foreground="{StaticResource TextSecondaryBrush}" FontFamily="Consolas" />
+                                    </DataTemplate>
+                                </GridViewColumn.CellTemplate>
+                            </GridViewColumn>
+                            <GridViewColumn Header="Available Updates" Width="260">
+                                <GridViewColumn.CellTemplate>
+                                    <DataTemplate>
+                                        <ItemsControl ItemsSource="{Binding Updates}">
+                                            <ItemsControl.ItemTemplate>
+                                                <DataTemplate>
+                                                    <Border Margin="0,2,0,0" Padding="6,2" CornerRadius="3" 
+                                                            Background="{StaticResource SurfaceVariantBrush}">
+                                                        <StackPanel Orientation="Horizontal">
+                                                            <TextBlock Text="{Binding SourceDisplay}" FontSize="10" FontWeight="Bold" 
+                                                                       Foreground="{StaticResource PrimaryBrush}" Margin="0,0,8,0" />
+                                                            <TextBlock Text="{Binding Version}" FontSize="11" FontFamily="Consolas" 
+                                                                       Foreground="{StaticResource SuccessBrush}" Margin="0,0,8,0" />
+                                                            <TextBlock Text="{Binding Date}" FontSize="10" Foreground="{StaticResource TextDisabledBrush}" Margin="0,0,8,0" />
+                                                            <TextBlock Text="WHQL" FontSize="9" Foreground="{StaticResource InfoBrush}" 
+                                                                       Visibility="{Binding IsWHQL, Converter={StaticResource BoolToVis}}" />
+                                                        </StackPanel>
+                                                    </Border>
+                                                </DataTemplate>
+                                            </ItemsControl.ItemTemplate>
+                                        </ItemsControl>
+                                    </DataTemplate>
+                                </GridViewColumn.CellTemplate>
+                            </GridViewColumn>
+                        </GridView>
+                    </ListView.View>
+                </ListView>
+            </Grid>
+        </GroupBox>
+
+        <!-- Progress Bar -->
+        <Grid Grid.Row="3" Margin="0,8,0,8" Visibility="{Binding IsBusy, Converter={StaticResource BoolToVis}}">
+            <Grid.RowDefinitions>
+                <RowDefinition Height="Auto" />
+                <RowDefinition Height="Auto" />
+            </Grid.RowDefinitions>
+            <ProgressBar Grid.Row="0" Style="{StaticResource ModernProgressBarStyle}" Value="{Binding ProgressValue}" Height="8" />
+            <TextBlock Grid.Row="1" Text="{Binding StatusText}" FontSize="11" Foreground="{StaticResource TextSecondaryBrush}" Margin="0,4,0,0" />
+        </Grid>
+
+        <!-- Log / Status Bar -->
+        <GroupBox Grid.Row="4" Style="{StaticResource ModernGroupBoxStyle}" Header="Log" Padding="8">
+            <Grid>
+                <Grid.RowDefinitions>
+                    <RowDefinition Height="Auto" />
+                    <RowDefinition Height="*" />
+                </Grid.RowDefinitions>
+
+                <Grid Grid.Row="0" Margin="0,0,0,4">
+                    <Grid.ColumnDefinitions>
+                        <ColumnDefinition Width="*" />
+                        <ColumnDefinition Width="Auto" />
+                    </Grid.ColumnDefinitions>
+                    <TextBlock Text="{Binding StatusText}" FontSize="12" Foreground="{StaticResource TextPrimaryBrush}" VerticalAlignment="Center" />
+                    
+                    <StackPanel Grid.Column="1" Orientation="Horizontal" HorizontalAlignment="Right">
+                        <Button Content="Scan" Style="{StaticResource PrimaryButtonStyle}" 
+                                Command="{Binding ScanCommand}" IsEnabled="{Binding IsScanning, Converter={StaticResource InverseBoolConverter}}"
+                                Padding="16,6" Margin="0,0,8,0" />
+                        <Button Content="Install Selected" Style="{StaticResource PrimaryButtonStyle}" 
+                                Command="{Binding InstallCommand}" IsEnabled="{Binding IsInstalling, Converter={StaticResource InverseBoolConverter}}"
+                                Padding="16,6" Margin="0,0,8,0" />
+                        <Button Content="Cancel" Style="{StaticResource DangerButtonStyle}" 
+                                Command="{Binding CancelCommand}" IsEnabled="{Binding IsBusy}" 
+                                Visibility="{Binding IsBusy, Converter={StaticResource BoolToVis}}"
+                                Padding="16,6" />
+                    </StackPanel>
+                </Grid>
+
+                <TextBox Grid.Row="1" Style="{StaticResource ModernTextBoxStyle}" 
+                         Text="{Binding LogText, Mode=OneWay}" IsReadOnly="True" 
+                         VerticalScrollBarVisibility="Auto" MaxHeight="180"
+                         FontFamily="Consolas" FontSize="11" Background="#FF181818" />
+            </Grid>
+        </GroupBox>
+    </Grid>
+</Window>

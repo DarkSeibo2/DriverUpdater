@@ -1,0 +1,19 @@
+## Build artifacts
+bin/
+obj/
+!DriverUpdater/Resources/Icons/**
+TypeProbe/bin/
+TypeProbe/obj/
+
+## Runtime data (portable layout - lives next to the exe)
+Data/
+!DriverUpdater/Resources/Data-templates/**
+
+## Test transcripts
+*.log
+
+## User/OS junk
+*.user
+*.suo
+.DS_Store
+Thumbs.db
