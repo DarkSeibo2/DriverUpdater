@@ -35,7 +35,7 @@ public class LenovoSource : BaseSource
         _httpClient.DefaultRequestHeaders.Add("User-Agent", "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36");
     }
 
-    private sealed record LenovoPackage(
+    internal sealed record LenovoPackage(
         string Id, string Version, string Title, string ReleaseDate, string Category,
         string[] HardwareIds, string DownloadUrl, string InstallerFileName, long SizeBytes,
         string InstallerSha1 = "");
@@ -193,7 +193,7 @@ public class LenovoSource : BaseSource
         return updates;
     }
 
-    private static List<(string Url, string Category)> CatalogLocations(XDocument catalog)
+    internal static List<(string Url, string Category)> CatalogLocations(XDocument catalog)
     {
         return catalog.Descendants("package")
             .Select(p => (Url: (string?)p.Element("location") ?? "", Category: ((string?)p.Element("category") ?? "").Trim()))
@@ -201,10 +201,8 @@ public class LenovoSource : BaseSource
             .ToList();
     }
 
-    private async Task<LenovoPackage?> ParseDescriptorAsync(string descriptorUrl, string category, CancellationToken ct)
+    internal static LenovoPackage? ParseDescriptorXml(XDocument doc, string descriptorUrl, string category)
     {
-        var xml = await _httpClient.GetStringAsync(descriptorUrl, ct);
-        var doc = XDocument.Parse(xml);
         var root = doc.Root;
         if (root == null || root.Name.LocalName != "Package") return null;
 
@@ -255,6 +253,12 @@ public class LenovoSource : BaseSource
             SizeBytes: size,
             InstallerSha1: crc
         );
+    }
+
+    private async Task<LenovoPackage?> ParseDescriptorAsync(string descriptorUrl, string category, CancellationToken ct)
+    {
+        var xml = await _httpClient.GetStringAsync(descriptorUrl, ct);
+        return ParseDescriptorXml(XDocument.Parse(xml), descriptorUrl, category);
     }
 
     // ---------- install ----------
