@@ -66,7 +66,14 @@ public class SettingsService
         {
             EnsureDirectories();
             var json = JsonConvert.SerializeObject(_settings, Formatting.Indented);
-            File.WriteAllText(_settingsPath, json);
+
+            // Atomic write: a crash mid-save must not leave a half-written settings.json
+            var tmpPath = _settingsPath + ".tmp";
+            File.WriteAllText(tmpPath, json);
+            if (File.Exists(_settingsPath))
+                File.Replace(tmpPath, _settingsPath, _settingsPath + ".bak");
+            else
+                File.Move(tmpPath, _settingsPath);
             _logger.LogInformation("Settings saved to {Path}", _settingsPath);
         }
         catch (Exception ex)
@@ -88,15 +95,6 @@ public class SettingsService
         {
             try { Directory.CreateDirectory(dir); } catch { }
         }
-    }
-
-    public void UpdateDataPaths(string exeDirectory)
-    {
-        var dataDir = Path.Combine(exeDirectory, "Data");
-        _settings.DataDirectory = dataDir;
-        _settings.BackupDirectory = Path.Combine(dataDir, "backups");
-        _settings.TempDirectory = Path.Combine(dataDir, "temp");
-        EnsureDirectories();
     }
 
     private static string GetDataDirectory()

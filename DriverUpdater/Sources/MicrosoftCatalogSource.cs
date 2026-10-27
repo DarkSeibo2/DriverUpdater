@@ -320,6 +320,7 @@ public class MicrosoftCatalogSource : BaseSource
             {
                 // 259 (STATUS_PENDING): device reboot requested to finish the install
                 var needsReboot = result.ExitCode != 0;
+                RebootRequired = needsReboot;
                 progress?.Report(new InstallProgress(100, needsReboot ? "Installation complete (reboot required)" : "Installation complete", 0, 0));
                 _logger.LogInformation("Catalog driver installed successfully (exit code: {Code})", result.ExitCode);
                 return true;
@@ -375,13 +376,26 @@ public class MicrosoftCatalogSource : BaseSource
     private sealed record ProcessResult(int ExitCode, string Output);
 
     /// Diagnostic file log (Data\logs\catalog.log) —ILogger goes to console only.
+    /// Rotated at 2 MB to keep the latest transcript (catalog.log.old = previous).
     private void DiagLog(string message)
     {
         try
         {
             var dir = Path.Combine(_settings.Settings.DataDirectory, "logs");
             Directory.CreateDirectory(dir);
-            File.AppendAllText(Path.Combine(dir, "catalog.log"),
+            var logPath = Path.Combine(dir, "catalog.log");
+            try
+            {
+                var fi = new FileInfo(logPath);
+                if (fi.Exists && fi.Length > 2 * 1024 * 1024)
+                {
+                    var old = Path.Combine(dir, "catalog.log.old");
+                    File.Delete(old);
+                    File.Move(logPath, old);
+                }
+            }
+            catch { }
+            File.AppendAllText(logPath,
                 $"[{DateTime.Now:HH:mm:ss.fff}] {message}{Environment.NewLine}");
         }
         catch { }

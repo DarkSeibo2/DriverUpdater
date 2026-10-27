@@ -1,5 +1,6 @@
 using Microsoft.Extensions.Logging;
 using DriverUpdater.Models;
+using DriverUpdater.Sources;
 
 namespace DriverUpdater.Services;
 
@@ -37,8 +38,10 @@ public class InstallService
         }
 
         // Check admin rights for driver installs
-        var hasDriverUpdates = selectedUpdates.Any(u => 
-            u.Source is UpdateSource.MicrosoftCatalog or UpdateSource.WindowsUpdate or UpdateSource.SDIO or UpdateSource.DriverPack or UpdateSource.VendorSite);
+        var hasDriverUpdates = selectedUpdates.Any(u =>
+            u.Source is UpdateSource.MicrosoftCatalog or UpdateSource.WindowsUpdate or UpdateSource.WindowsUpdateFull
+                or UpdateSource.SDIO or UpdateSource.DriverPack or UpdateSource.VendorSite
+                or UpdateSource.NvidiaGeForce or UpdateSource.Lenovo);
         
         if (hasDriverUpdates && !IsAdministrator())
         {
@@ -114,6 +117,9 @@ public class InstallService
 
                     _logger.LogInformation("Installing {Source}: {Device}", source.DisplayName, update.DeviceName);
 
+                    // Reset the per-source reboot flag so it always reflects this install
+                    if (source is BaseSource baseSrc) baseSrc.RebootRequired = false;
+
                     var success = await source.InstallAsync(update, ct, new Progress<InstallProgress>(p =>
                         progress?.Report(new InstallProgress(
                             (double)completed / totalItems * 100,
@@ -121,16 +127,17 @@ public class InstallService
                             p.BytesDownloaded,
                             p.TotalBytes))));
 
+                    var rebootNeeded = source is BaseSource bs && bs.RebootRequired;
                     summary.Results[update.Id] = new InstallResult
                     {
                         Success = success,
-                        Message = success ? "Installed" : "Install failed",
-                        RequiresReboot = source.SourceType is UpdateSource.WindowsUpdate or UpdateSource.MicrosoftCatalog
+                        Message = success ? (rebootNeeded ? "Installed (reboot required)" : "Installed") : "Install failed",
+                        RequiresReboot = rebootNeeded
                     };
                     if (success)
                     {
                         summary.Succeeded++;
-                        if (summary.Results[update.Id].RequiresReboot) summary.RequiresReboot = true;
+                        if (rebootNeeded) summary.RequiresReboot = true;
                     }
                     else
                     {

@@ -15,6 +15,13 @@ public abstract class BaseSource : ISourcePlugin
     public bool IsEnabled { get; set; } = true;
     public abstract bool RequiresAdmin { get; }
 
+    /// <summary>
+    /// Set by the source when the last InstallAsync succeeded but a reboot is
+    /// needed to finish (e.g. pnputil exit code 259). Read by InstallService.
+    /// </summary>
+    /// Read by InstallService; reset there before each install.
+    public bool RebootRequired { get; internal set; }
+
     protected BaseSource(ILogger logger, SettingsService settings)
     {
         _logger = logger;

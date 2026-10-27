@@ -401,6 +401,17 @@ public class NvidiaGeForceSource : BaseSource
             }
 
             ct.ThrowIfCancellationRequested();
+            progress?.Report(new InstallProgress(58, "Verifying installer signature...", 0, 0));
+
+            // We are about to execute this file with admin rights: the Authenticode
+            // check is here so that a tampered/redirected download cannot be run.
+            if (!FileVerification.HasValidSignature(filePath, "NVIDIA", _logger))
+            {
+                _logger.LogError("NVIDIA installer signature verification failed, aborting install");
+                progress?.Report(new InstallProgress(95, "Signature verification failed - installer not trusted", 0, 0));
+                return false;
+            }
+
             progress?.Report(new InstallProgress(60, $"Installing NVIDIA {update.Version} (this can take several minutes)...", 0, 0));
 
             var exitCode = await Task.Run(() =>

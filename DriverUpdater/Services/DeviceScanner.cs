@@ -197,12 +197,6 @@ public class DeviceScanner
         return Array.Empty<string>();
     }
 
-    private DeviceStatus GetDeviceStatus(string pnpDeviceId)
-    {
-        // Statuses are now preloaded in ScanInternal (single WMI query instead of one per device)
-        return DeviceStatus.Unknown;
-    }
-
     private static string ParseWmiDate(string wmiDate)
     {
         if (string.IsNullOrEmpty(wmiDate) || wmiDate.Length < 8) return "";

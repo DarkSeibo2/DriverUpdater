@@ -61,21 +61,22 @@ public class BackupService
     public async Task<InstallResult> BackupDriversAsync(string backupName, CancellationToken ct = default, IProgress<string>? progress = null)
     {
         var destDir = Path.Combine(_settings.Settings.BackupDirectory, backupName);
-        
+
         try
         {
             _logger.LogInformation("Backing up drivers to {DestDir}", destDir);
             progress?.Report($"Creating backup directory: {destDir}");
-            
+
             Directory.CreateDirectory(destDir);
 
+            // The app is already elevated (requireAdministrator manifest), so no
+            // Verb=runas needed. UseShellExecute MUST be false to redirect output.
             var psi = new System.Diagnostics.ProcessStartInfo
             {
-                FileName = "powershell.exe",
+                FileName = System.IO.Path.Combine(Environment.SystemDirectory, "WindowsPowerShell", "v1.0", "powershell.exe"),
                 Arguments = $"-NoProfile -ExecutionPolicy Bypass -Command \"Export-WindowsDriver -Online -Destination '{destDir}'\"",
-                Verb = "runas",
-                UseShellExecute = true,
-                WindowStyle = System.Diagnostics.ProcessWindowStyle.Hidden,
+                UseShellExecute = false,
+                CreateNoWindow = true,
                 RedirectStandardOutput = true,
                 RedirectStandardError = true
             };
@@ -86,11 +87,24 @@ public class BackupService
                 return new InstallResult { Success = false, Message = "Failed to start driver backup" };
             }
 
-            // Read output asynchronously
+            // Kill the process on cancellation
+            var cancelReg = ct.Register(() => { try { process.Kill(); } catch { } });
             var outputTask = process.StandardOutput.ReadToEndAsync();
             var errorTask = process.StandardError.ReadToEndAsync();
-            
-            await process.WaitForExitAsync(ct);
+
+            try
+            {
+                await process.WaitForExitAsync(ct);
+            }
+            catch (OperationCanceledException)
+            {
+                try { process.Kill(); } catch { }
+                throw;
+            }
+            finally
+            {
+                cancelReg.Dispose();
+            }
             var output = await outputTask;
             var error = await errorTask;
 
@@ -131,11 +145,10 @@ public class BackupService
 
             var psi = new System.Diagnostics.ProcessStartInfo
             {
-                FileName = "pnputil.exe",
+                FileName = Path.Combine(Environment.SystemDirectory, "pnputil.exe"),
                 Arguments = $"/add-driver \"{backupPath}\\*.inf\" /subdirs /install",
-                Verb = "runas",
-                UseShellExecute = true,
-                WindowStyle = System.Diagnostics.ProcessWindowStyle.Hidden,
+                UseShellExecute = false,
+                CreateNoWindow = true,
                 RedirectStandardOutput = true,
                 RedirectStandardError = true
             };
@@ -146,10 +159,23 @@ public class BackupService
                 return new InstallResult { Success = false, Message = "Failed to start driver restore" };
             }
 
+            var cancelReg = ct.Register(() => { try { process.Kill(); } catch { } });
             var outputTask = process.StandardOutput.ReadToEndAsync();
             var errorTask = process.StandardError.ReadToEndAsync();
-            
-            await process.WaitForExitAsync(ct);
+
+            try
+            {
+                await process.WaitForExitAsync(ct);
+            }
+            catch (OperationCanceledException)
+            {
+                try { process.Kill(); } catch { }
+                throw;
+            }
+            finally
+            {
+                cancelReg.Dispose();
+            }
             var output = await outputTask;
             var error = await errorTask;
 

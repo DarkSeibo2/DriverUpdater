@@ -37,7 +37,8 @@ public class LenovoSource : BaseSource
 
     private sealed record LenovoPackage(
         string Id, string Version, string Title, string ReleaseDate, string Category,
-        string[] HardwareIds, string DownloadUrl, string InstallerFileName, long SizeBytes);
+        string[] HardwareIds, string DownloadUrl, string InstallerFileName, long SizeBytes,
+        string InstallerSha1 = "");
 
     public override async Task<IReadOnlyList<DriverUpdate>> ScanAsync(IReadOnlyList<DeviceInfo> devices, CancellationToken ct = default)
     {
@@ -184,7 +185,7 @@ public class LenovoSource : BaseSource
                     IsWHQL: true,
                     DownloadSizeBytes: best.SizeBytes,
                     Changelog: $"Lenovo package {best.Id} ({best.Category})"
-                ));
+                ) { FileChecksum = best.InstallerSha1 });
             }
         }
 
@@ -231,9 +232,11 @@ public class LenovoSource : BaseSource
         // Skips BIOS/firmware/software bundles which cannot be installed via INF.
         if (hwIds.Length == 0) return null;
 
-        // Installer file + size: Files section
+        // Installer file + integrity + size: Files section
         var installer = root.Element("Files")?.Element("Installer")?.Descendants("File").FirstOrDefault();
         var fileName = installer?.Element("Name")?.Value.Trim() ?? "";
+        // <CRC> holds the SHA-1 of the installer (Lenovo package convention)
+        var crc = installer?.Element("CRC")?.Value.Trim() ?? "";
         var size = long.TryParse(installer?.Element("Size")?.Value, out var s) ? s : 0;
         if (string.IsNullOrEmpty(fileName)) return null;
 
@@ -249,7 +252,8 @@ public class LenovoSource : BaseSource
             HardwareIds: hwIds,
             DownloadUrl: fileUri.ToString(),
             InstallerFileName: fileName,
-            SizeBytes: size
+            SizeBytes: size,
+            InstallerSha1: crc
         );
     }
 
@@ -306,6 +310,15 @@ public class LenovoSource : BaseSource
             }
 
             ct.ThrowIfCancellationRequested();
+            progress?.Report(new InstallProgress(52, "Verifying package checksum...", 0, 0));
+
+            if (!FileVerification.VerifyChecksum(installerPath, update.FileChecksum, _logger))
+            {
+                _logger.LogError("Lenovo installer checksum mismatch for {File}, aborting install", installerPath);
+                progress?.Report(new InstallProgress(95, "Checksum mismatch - package not trusted", 0, 0));
+                return false;
+            }
+
             progress?.Report(new InstallProgress(55, "Extracting Lenovo package...", 0, 0));
 
             // Lenovo driver packages are Inno-Setup style; extract silently to a dir,
@@ -330,6 +343,7 @@ public class LenovoSource : BaseSource
                 var dpExit = await RunProcessAsync(dpinst, "/S /SA", ct, timeoutMs: 20 * 60 * 1000);
                 _logger.LogInformation("Lenovo: dpinst exit code {Code}", dpExit);
                 ok = dpExit == 0 || dpExit == 3010 || dpExit == 259;
+                RebootRequired = dpExit != 0;
             }
             else if (infFiles.Length > 0)
             {
@@ -341,6 +355,7 @@ public class LenovoSource : BaseSource
                     $"/add-driver \"{extractDir}\\*.inf\" /subdirs /install", ct, timeoutMs: 20 * 60 * 1000);
                 _logger.LogInformation("Lenovo: pnputil exit {Code}", exit);
                 ok = exit == 0 || exit == 3010 || exit == 259;
+                RebootRequired = exit != 0;
             }
             else
             {

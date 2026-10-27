@@ -66,6 +66,13 @@ public record DriverUpdate(
 )
 {
     public bool IsSelected { get; set; } = true;
+
+    /// <summary>
+    /// Trusted checksum of the downloadable package when the source publishes one
+    /// (hex string; length defines the algorithm: 40 = SHA-1, 64 = SHA-256).
+    /// Verified by FileVerification before any installer is executed.
+    /// </summary>
+    public string FileChecksum { get; init; } = "";
 }
 
 public interface ISourcePlugin
