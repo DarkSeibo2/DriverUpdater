@@ -232,11 +232,11 @@ public class NvidiaGeForceSource : BaseSource
         return (bestProduct.Value.Product.Psid.ToString(), bestProduct.Value.Product.Value.ToString());
     }
 
-    private static string Norm(string s) =>
+    internal static string Norm(string s) =>
         Regex.Replace((s ?? "").ToLowerInvariant(), @"\s+", " ").Replace("nvidia", "").Trim('-', ' ');
 
     /// <summary>Series-level cousin score (0 = unrelated).</summary>
-    private static int ScoreSeries(string seriesName, string gpuName, bool isNotebook)
+    internal static int ScoreSeries(string seriesName, string gpuName, bool isNotebook)
     {
         var p = seriesName.ToLowerInvariant();
         var g = gpuName.ToLowerInvariant();
@@ -258,7 +258,7 @@ public class NvidiaGeForceSource : BaseSource
     }
 
     /// <summary>Product-level match score; &gt;0 then wins by length (most specific name).</summary>
-    private static double ScoreProduct(string productName, string gpuName)
+    internal static double ScoreProduct(string productName, string gpuName)
     {
         var p = Norm(productName);
         var g = Norm(gpuName);
@@ -268,8 +268,8 @@ public class NvidiaGeForceSource : BaseSource
         var pt = p.Split(' ').ToHashSet();
         var gt = g.Split(' ').ToHashSet();
         pt.IntersectWith(gt);
-        if (pt.Count == 0) return 0;
-        return pt.Count + g.Split(' ').Intersect(p.Split(' ')).Count() * 0.0; // token overlap
+        // Simple token-overlap fallback (containment paths above already scored higher)
+        return pt.Count;
     }
 
     private async Task<List<SeriesInfo>> GetSeriesAsync(int parentType, CancellationToken ct)
@@ -491,7 +491,7 @@ public class NvidiaGeForceSource : BaseSource
     /// This converts e.g. "32.0.15.6109" -> (561,09) for direct comparison with the
     /// NVIDIA API version "561.09".
     /// </summary>
-    private static (int Major, int Minor)? NvVersionFromWmi(string? wmiVersion)
+    internal static (int Major, int Minor)? NvVersionFromWmi(string? wmiVersion)
     {
         if (string.IsNullOrWhiteSpace(wmiVersion)) return null;
         var digits = new string(wmiVersion.Where(char.IsDigit).ToArray());
@@ -501,20 +501,20 @@ public class NvidiaGeForceSource : BaseSource
         return (major, minor);
     }
 
-    private static (int Major, int Minor)? ParseNvVersion(string? version)
+    internal static (int Major, int Minor)? ParseNvVersion(string? version)
     {
         var m = Regex.Match(version ?? "", @"(\d+)\.(\d{1,2})(?:\b|$)");
         if (!m.Success) return null;
         return (int.Parse(m.Groups[1].Value), int.Parse(m.Groups[2].Value));
     }
 
-    private static int NvCmp((int Major, int Minor) a, (int Major, int Minor) b)
+    internal static int NvCmp((int Major, int Minor) a, (int Major, int Minor) b)
     {
         if (a.Major != b.Major) return a.Major.CompareTo(b.Major);
         return a.Minor.CompareTo(b.Minor);
     }
 
-    private static DateTime? ParseNvDate(string? s)
+    internal static DateTime? ParseNvDate(string? s)
     {
         // "Mon Sep 20, 2021"
         var m = Regex.Match(s ?? "", @"[A-Za-z]{3}\s+(\w{3})\s+(\d{1,2}),?\s+(\d{4})");
@@ -525,7 +525,7 @@ public class NvidiaGeForceSource : BaseSource
         return new DateTime(int.Parse(m.Groups[3].Value), month, int.Parse(m.Groups[2].Value));
     }
 
-    private static DateTime? ParseWmiDate(string? s)
+    internal static DateTime? ParseWmiDate(string? s)
     {
         if (string.IsNullOrWhiteSpace(s)) return null;
         // WMI DMTF: "20260923000000.000000-000" -> take first 8 digits as yyyy-MM-dd
@@ -536,7 +536,7 @@ public class NvidiaGeForceSource : BaseSource
         return null;
     }
 
-    private static long ParseFileSize(string? size)
+    internal static long ParseFileSize(string? size)
     {
         // "735.5 MB"
         var m = Regex.Match(size ?? "", @"([\d.]+)\s*([KMG]?B)", RegexOptions.IgnoreCase);

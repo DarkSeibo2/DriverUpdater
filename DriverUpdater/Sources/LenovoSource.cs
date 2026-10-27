@@ -480,7 +480,7 @@ public class LenovoSource : BaseSource
         }, ct);
     }
 
-    private static DateTime? TryParseIsoDate(string? s)
+    internal static DateTime? TryParseIsoDate(string? s)
     {
         if (string.IsNullOrWhiteSpace(s)) return null;
         // ISO "2018-08-07" or WMI DMTF "20260923000000..."

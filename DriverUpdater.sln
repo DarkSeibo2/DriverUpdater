@@ -1,0 +1,34 @@
+﻿
+Microsoft Visual Studio Solution File, Format Version 12.00
+# Visual Studio Version 17
+VisualStudioVersion = 17.0.31903.59
+MinimumVisualStudioVersion = 10.0.40219.1
+Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "DriverUpdater", "DriverUpdater\DriverUpdater.csproj", "{41B242BE-438E-4B8B-B043-9F7B02335AFB}"
+EndProject
+Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "DriverUpdater.Tests", "DriverUpdater.Tests\DriverUpdater.Tests.csproj", "{02AD5FE6-AD36-4FE9-BAF9-4BF85004EFFE}"
+EndProject
+Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "TypeProbe", "TypeProbe\TypeProbe.csproj", "{A0A066EE-C0F2-46D7-B409-91C2F5931293}"
+EndProject
+Global
+	GlobalSection(SolutionConfigurationPlatforms) = preSolution
+		Debug|Any CPU = Debug|Any CPU
+		Release|Any CPU = Release|Any CPU
+	EndGlobalSection
+	GlobalSection(SolutionProperties) = preSolution
+		HideSolutionNode = FALSE
+	EndGlobalSection
+	GlobalSection(ProjectConfigurationPlatforms) = postSolution
+		{41B242BE-438E-4B8B-B043-9F7B02335AFB}.Debug|Any CPU.ActiveCfg = Debug|Any CPU
+		{41B242BE-438E-4B8B-B043-9F7B02335AFB}.Debug|Any CPU.Build.0 = Debug|Any CPU
+		{41B242BE-438E-4B8B-B043-9F7B02335AFB}.Release|Any CPU.ActiveCfg = Release|Any CPU
+		{41B242BE-438E-4B8B-B043-9F7B02335AFB}.Release|Any CPU.Build.0 = Release|Any CPU
+		{02AD5FE6-AD36-4FE9-BAF9-4BF85004EFFE}.Debug|Any CPU.ActiveCfg = Debug|Any CPU
+		{02AD5FE6-AD36-4FE9-BAF9-4BF85004EFFE}.Debug|Any CPU.Build.0 = Debug|Any CPU
+		{02AD5FE6-AD36-4FE9-BAF9-4BF85004EFFE}.Release|Any CPU.ActiveCfg = Release|Any CPU
+		{02AD5FE6-AD36-4FE9-BAF9-4BF85004EFFE}.Release|Any CPU.Build.0 = Release|Any CPU
+		{A0A066EE-C0F2-46D7-B409-91C2F5931293}.Debug|Any CPU.ActiveCfg = Debug|Any CPU
+		{A0A066EE-C0F2-46D7-B409-91C2F5931293}.Debug|Any CPU.Build.0 = Debug|Any CPU
+		{A0A066EE-C0F2-46D7-B409-91C2F5931293}.Release|Any CPU.ActiveCfg = Release|Any CPU
+		{A0A066EE-C0F2-46D7-B409-91C2F5931293}.Release|Any CPU.Build.0 = Release|Any CPU
+	EndGlobalSection
+EndGlobal

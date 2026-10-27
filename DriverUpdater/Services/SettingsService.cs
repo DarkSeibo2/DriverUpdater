@@ -1,11 +1,13 @@
 using Microsoft.Extensions.Logging;
-using Newtonsoft.Json;
+using System.Text.Json;
 using DriverUpdater.Models;
 
 namespace DriverUpdater.Services;
 
 public class SettingsService
 {
+    private static readonly JsonSerializerOptions JsonOptions = new() { WriteIndented = true };
+
     private readonly ILogger<SettingsService> _logger;
     private readonly string _settingsPath;
     private AppSettings _settings;
@@ -43,7 +45,7 @@ public class SettingsService
             if (File.Exists(_settingsPath))
             {
                 var json = File.ReadAllText(_settingsPath);
-                _settings = JsonConvert.DeserializeObject<AppSettings>(json) ?? new AppSettings();
+                _settings = JsonSerializer.Deserialize<AppSettings>(json) ?? new AppSettings();
             }
             else
             {
@@ -65,7 +67,7 @@ public class SettingsService
         try
         {
             EnsureDirectories();
-            var json = JsonConvert.SerializeObject(_settings, Formatting.Indented);
+            var json = JsonSerializer.Serialize(_settings, JsonOptions);
 
             // Atomic write: a crash mid-save must not leave a half-written settings.json
             var tmpPath = _settingsPath + ".tmp";

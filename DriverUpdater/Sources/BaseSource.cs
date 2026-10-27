@@ -31,14 +31,14 @@ public abstract class BaseSource : ISourcePlugin
     public abstract Task<IReadOnlyList<DriverUpdate>> ScanAsync(IReadOnlyList<DeviceInfo> devices, CancellationToken ct = default);
     public abstract Task<bool> InstallAsync(DriverUpdate update, CancellationToken ct = default, IProgress<InstallProgress>? progress = null);
 
-    protected static Version? ParseVersion(string? version)
+    internal protected static Version? ParseVersion(string? version)
     {
         if (string.IsNullOrWhiteSpace(version)) return null;
         try { return new Version(version); }
         catch { return null; }
     }
 
-    protected static bool IsNewer(string? available, string? installed)
+    internal protected static bool IsNewer(string? available, string? installed)
     {
         var av = ParseVersion(available);
         var iv = ParseVersion(installed);
