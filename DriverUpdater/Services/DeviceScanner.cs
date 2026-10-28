@@ -154,7 +154,13 @@ public class DeviceScanner
                 ));
             }
 
-            // Deduplicate by hardware ID (first one)
+            // Second pass: devices WITHOUT any installed driver. Win32_PnPSignedDriver
+            // never lists them, so without this pass driverless platform nodes
+            // (AMD PSP/GPIO on servers etc.) are invisible to every source.
+            AddDriverlessDevices(devices, entityStatus, excludedHwids, ct, progress);
+
+            // Deduplicate by hardware ID (first one) - collapses the N per-die
+            // functions of one platform device (e.g. 16 PSP coprocessors) into one entry
             devices = devices
                 .GroupBy(d => d.HardwareIds.Split(';')[0])
                 .Select(g => g.First())
@@ -176,6 +182,79 @@ public class DeviceScanner
         }
 
         return devices;
+    }
+
+    /// <summary>
+    /// Enumerates PnP entities that have no driver installed (ConfigManagerErrorCode != 0)
+    /// and match platform classes (System, SecurityAccelerator, Processor) or known
+    /// platform hardware IDs. Adds them as DeviceInfo with empty driver fields.
+    /// </summary>
+    private void AddDriverlessDevices(List<DeviceInfo> devices,
+        Dictionary<string, (DeviceStatus, int)> entityStatus,
+        HashSet<string> excludedHwids, CancellationToken ct, IProgress<string>? progress)
+    {
+        try
+        {
+            progress?.Report("Querying driverless platform devices...");
+
+            // System (FCH platform nodes), SecurityAccelerator (PSP/CCP), Processor
+            const string systemGuid = "{4d36e97d-e325-11ce-bfc1-08002be10318}";
+            const string securityAcceleratorGuid = "{533c5b84-ec70-11d2-9505-00c04f79deb0}";
+            const string processorGuid = "{5090648a-4d44-4b69-b0b3-4b207fea0d59}";
+
+            using var searcher = new ManagementObjectSearcher(
+                "SELECT DeviceID, Name, ClassGuid, HardwareID, Manufacturer FROM Win32_PnPEntity");
+
+            foreach (ManagementObject e in searcher.Get())
+            {
+                ct.ThrowIfCancellationRequested();
+
+                var pnpId = GetStr(e, "DeviceID");
+                if (pnpId.Length == 0) continue;
+                if (pnpId.StartsWith("ROOT\\", StringComparison.OrdinalIgnoreCase) ||
+                    pnpId.StartsWith("SWD\\", StringComparison.OrdinalIgnoreCase))
+                    continue; // virtual / emulated nodes
+
+                // only actually-broken (driverless) nodes
+                var (status, errCode) = entityStatus.TryGetValue(pnpId, out var st)
+                    ? st : (DeviceStatus.Unknown, 0);
+                if (errCode == 0 && status != DeviceStatus.Error) continue;
+
+                var hwids = WmiToStrings(GetObj(e, "HardwareID"));
+                if (hwids.Length == 0) continue;
+                var firstHwid = hwids[0];
+
+                // Some nodes can never take a driver (dummy functions) - do not offer them
+                if (KnownPlatformDevices.ShouldSkip(firstHwid)) continue;
+
+                // the exclusion settings still apply
+                if (excludedHwids.Any(x => firstHwid.Contains(x, StringComparison.OrdinalIgnoreCase))) continue;
+
+                // Class must be a platform class, or the HWID must be a known platform device
+                var classGuid = GetStr(e, "ClassGuid");
+                var knownName = KnownPlatformDevices.DisplayNameFor(firstHwid);
+                if (knownName == null &&
+                    classGuid is not (systemGuid or securityAcceleratorGuid or processorGuid))
+                    continue;
+
+                devices.Add(new DeviceInfo(
+                    InstanceId: pnpId,
+                    FriendlyName: knownName ?? GetStr(e, "Name"),
+                    DeviceClass: "",
+                    Manufacturer: GetStr(e, "Manufacturer"),
+                    HardwareIds: string.Join(";", hwids),
+                    CompatibleIds: "",
+                    CurrentDriverVersion: "",
+                    CurrentDriverDate: "",
+                    CurrentDriverProvider: "",
+                    Status: DeviceStatus.Error,
+                    PnpDeviceId: pnpId));
+            }
+        }
+        catch (Exception ex)
+        {
+            _logger.LogWarning(ex, "Driverless-device pass failed (scanning installed drivers only)");
+        }
     }
 
     private static string GetStr(ManagementBaseObject obj, string prop)

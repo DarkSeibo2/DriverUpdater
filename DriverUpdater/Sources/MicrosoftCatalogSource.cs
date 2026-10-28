@@ -64,8 +64,11 @@ public class MicrosoftCatalogSource : BaseSource
     private async Task<DriverUpdate?> FindBestUpdateAsync(DeviceInfo device, string[] hardwareIds, string arch, CancellationToken ct)
     {
         Version? installedVer = ParseVersion(device.CurrentDriverVersion);
-        if (installedVer == null) return null;
         var installedDate = ParseFlexibleDate(device.CurrentDriverDate);
+        // Driverless device (empty version/date): there is no installed baseline,
+        // so any reasonably-versioned package outweighs "nothing" - the newest
+        // candidate by date/version is offered instead of skipping the device.
+        bool driverless = installedVer == null;
 
         DriverUpdate? best = null;
         (Version Ver, DateTime Date)? bestKey = null;
@@ -89,7 +92,11 @@ public class MicrosoftCatalogSource : BaseSource
                 // installed driver can never be selected by the device, so do not
                 // offer it (e.g. AMD amdxe 25.20.0.11/09-09 vs installed 25.10.0.1/09-23).
                 bool candidateWins;
-                if (installedDate.HasValue && resultDate.HasValue)
+                if (driverless)
+                {
+                    candidateWins = true;
+                }
+                else if (installedDate.HasValue && resultDate.HasValue)
                 {
                     candidateWins = resultDate.Value > installedDate.Value
                         ? true
