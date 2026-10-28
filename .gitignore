@@ -1,9 +1,11 @@
 ## Build artifacts
 bin/
 obj/
+publish/
 !DriverUpdater/Resources/Icons/**
-TypeProbe/bin/
-TypeProbe/obj/
+
+## Publish output (single-file exe + runtime DLLs)
+Release/
 
 ## Runtime data (portable layout - lives next to the exe)
 Data/

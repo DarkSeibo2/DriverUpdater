@@ -7,8 +7,6 @@ Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "DriverUpdater", "DriverUpda
 EndProject
 Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "DriverUpdater.Tests", "DriverUpdater.Tests\DriverUpdater.Tests.csproj", "{02AD5FE6-AD36-4FE9-BAF9-4BF85004EFFE}"
 EndProject
-Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "TypeProbe", "TypeProbe\TypeProbe.csproj", "{A0A066EE-C0F2-46D7-B409-91C2F5931293}"
-EndProject
 Global
 	GlobalSection(SolutionConfigurationPlatforms) = preSolution
 		Debug|Any CPU = Debug|Any CPU
@@ -26,9 +24,5 @@ Global
 		{02AD5FE6-AD36-4FE9-BAF9-4BF85004EFFE}.Debug|Any CPU.Build.0 = Debug|Any CPU
 		{02AD5FE6-AD36-4FE9-BAF9-4BF85004EFFE}.Release|Any CPU.ActiveCfg = Release|Any CPU
 		{02AD5FE6-AD36-4FE9-BAF9-4BF85004EFFE}.Release|Any CPU.Build.0 = Release|Any CPU
-		{A0A066EE-C0F2-46D7-B409-91C2F5931293}.Debug|Any CPU.ActiveCfg = Debug|Any CPU
-		{A0A066EE-C0F2-46D7-B409-91C2F5931293}.Debug|Any CPU.Build.0 = Debug|Any CPU
-		{A0A066EE-C0F2-46D7-B409-91C2F5931293}.Release|Any CPU.ActiveCfg = Release|Any CPU
-		{A0A066EE-C0F2-46D7-B409-91C2F5931293}.Release|Any CPU.Build.0 = Release|Any CPU
 	EndGlobalSection
 EndGlobal
