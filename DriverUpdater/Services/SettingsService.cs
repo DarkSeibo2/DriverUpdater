@@ -10,7 +10,7 @@ public class SettingsService
 
     private readonly ILogger<SettingsService> _logger;
     private readonly string _settingsPath;
-    private AppSettings _settings;
+    private AppSettings _settings = new();
 
     public SettingsService(ILogger<SettingsService> logger)
     {

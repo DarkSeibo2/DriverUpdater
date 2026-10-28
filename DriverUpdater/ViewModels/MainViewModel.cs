@@ -398,7 +398,7 @@ public partial class MainViewModel : ObservableObject
     }
 
     [RelayCommand]
-    private async Task RestoreBackupAsync()
+    private void RestoreBackupAsync()
     {
         // TODO: Show folder browser dialog and call backup service
         Log("Restore from backup - not yet implemented");
