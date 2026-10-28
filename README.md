@@ -31,6 +31,13 @@
 | NVIDIA GeForce | драйверы NVIDIA |
 | Lenovo | дескрипторы/каталог Lenovo (HWID, даты сборок) |
 
+## Скачивание готовой версии
+
+GitHub Actions при каждом пуше в `main` автоматически собирает portable-версию,
+прогоняет тесты и публикует zip-архив во вкладке **Releases**
+(`DriverUpdater-portable-build-N.zip`). Достаточно распаковать архив в любую
+папку и запустить `DriverUpdater.exe` — установщик не нужен.
+
 ## Сборка
 
 ```
