@@ -98,4 +98,60 @@ public class FileVerificationTests : IDisposable
         if (!File.Exists(dotnet)) return;
         Assert.False(FileVerification.HasValidSignature(dotnet, "NVIDIA", null));
     }
+
+    // ---------- install gate ----------
+
+    private string? FindSystemCatalog()
+    {
+        // The CatRoot subfolder GUID is the DRIVER_ACTION_VERIFY policy id -
+        // every .cat there is a WHQL/Attestation-signed driver catalog.
+        var catRoot = Path.Combine(Environment.SystemDirectory, "CatRoot",
+            "{F750E6C3-3873-42EC-B154-58184A242A1E}");
+        if (!Directory.Exists(catRoot)) return null;
+        return Directory.EnumerateFiles(catRoot, "*.cat").FirstOrDefault();
+    }
+
+    [Fact]
+    public void VerifyCatalogSignature_SignedSystemCatalogPasses()
+    {
+        var cat = FindSystemCatalog();
+        if (cat == null) return; // environment-specific
+        Assert.True(FileVerification.VerifyCatalogSignature(cat, null));
+    }
+
+    [Fact]
+    public void VerifyInstallablePackage_NonExecutableExtensionFails()
+    {
+        Assert.False(FileVerification.VerifyInstallablePackage(_sampleFile, null, new[] { "Microsoft" }, null, "test"));
+    }
+
+    [Fact]
+    public void VerifyInstallablePackage_UnknownPublisherRefused()
+    {
+        var junk = Path.Combine(_dir, "rogue_setup.exe");
+        File.WriteAllBytes(junk, new byte[] { 0x4D, 0x5A, 0x90, 0x00 });
+        // No publisher allowlist -> never run
+        Assert.False(FileVerification.VerifyInstallablePackage(junk, null, null, null, "test"));
+        // Empty allowlist -> never run
+        Assert.False(FileVerification.VerifyInstallablePackage(junk, null, Array.Empty<string>(), null, "test"));
+        // Unsigned -> never run
+        Assert.False(FileVerification.VerifyInstallablePackage(junk, null, new[] { "Anything" }, null, "test"));
+    }
+
+    [Fact]
+    public void VerifyInstallablePackage_BadChecksumFails()
+    {
+        var junk = Path.Combine(_dir, "rogue_setup.exe");
+        File.WriteAllBytes(junk, new byte[] { 0x4D, 0x5A, 0x90, 0x00 });
+        Assert.False(FileVerification.VerifyInstallablePackage(junk, "DEADBEEF", new[] { "Anything" }, null, "test"));
+    }
+
+    [Fact]
+    public void VerifyInstallablePackage_SignedAndPublisherMatchedPasses()
+    {
+        var dotnet = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.ProgramFiles), "dotnet", "dotnet.exe");
+        if (!File.Exists(dotnet)) return;
+        Assert.True(FileVerification.VerifyInstallablePackage(dotnet, null, new[] { "Microsoft" }, null, "test"));
+        Assert.False(FileVerification.VerifyInstallablePackage(dotnet, null, new[] { "NVIDIA" }, null, "test"));
+    }
 }

@@ -145,45 +145,59 @@ public class DriverPackSource : BaseSource
         string? tempDir = null;
         try
         {
+            if (!Uri.TryCreate(update.DownloadUrl, UriKind.Absolute, out var dlUri) ||
+                dlUri.Scheme != Uri.UriSchemeHttps)
+            {
+                _logger.LogError("DriverPack install: download URL must be HTTPS, got '{Url}'", update.DownloadUrl);
+                return false;
+            }
+
             _logger.LogInformation("DriverPack: installing {Title} for {Device}", update.Title, update.DeviceName);
             progress?.Report(new InstallProgress(0, "Downloading from DriverPack...", 0, 0));
 
             tempDir = Path.Combine(_settings.Settings.TempDirectory, $"drvp_{update.Id}");
             Directory.CreateDirectory(tempDir);
 
-            var fileName = "driver_package.zip"; // DriverPack typically returns ZIP
-            var filePath = Path.Combine(tempDir, fileName);
+            var filePath = Path.Combine(tempDir, "driver_package.zip"); // DriverPack typically returns ZIP
 
-            // Download with progress
-            using var response = await _httpClient.GetAsync(update.DownloadUrl, HttpCompletionOption.ResponseHeadersRead, ct);
-            response.EnsureSuccessStatusCode();
-
-            var totalBytes = response.Content.Headers.ContentLength ?? -1;
-            var downloaded = 0L;
-
-            using var stream = await response.Content.ReadAsStreamAsync(ct);
-            using var fileStream = File.Create(filePath);
-
-            var buffer = new byte[81920];
-            int bytesRead;
-            while ((bytesRead = await stream.ReadAsync(buffer, ct)) > 0)
-            {
-                await fileStream.WriteAsync(buffer.AsMemory(0, bytesRead), ct);
-                downloaded += bytesRead;
-
-                if (totalBytes > 0)
+            // Hardened download: HTTPS-only, hard size cap, partial files removed
+            await SecureDownload.DownloadToFileAsync(
+                _httpClient, update.DownloadUrl, filePath, SecureDownload.DefaultMaxBytes, ct,
+                progress: (done, total) =>
                 {
-                    var pct = (int)(90.0 * downloaded / totalBytes);
-                    progress?.Report(new InstallProgress(pct, $"Downloading: {downloaded / 1024 / 1024:N1} / {totalBytes / 1024 / 1024:N1} MB", downloaded, totalBytes));
-                }
-            }
+                    if (total > 0)
+                    {
+                        var pct = (int)(90.0 * done / total);
+                        progress?.Report(new InstallProgress(pct,
+                            $"Downloading: {done / 1024 / 1024:N1} / {total / 1024 / 1024:N1} MB", done, total));
+                    }
+                },
+                logger: _logger);
 
             progress?.Report(new InstallProgress(90, "Extracting package...", 0, 0));
 
-            // Extract ZIP
+            // Safe extraction: Zip Slip protection + uncompressed-size and
+            // entry-count limits (decompression bombs cannot fill the disk)
             var extractDir = Path.Combine(tempDir, "extracted");
-            Directory.CreateDirectory(extractDir);
-            System.IO.Compression.ZipFile.ExtractToDirectory(filePath, extractDir, true);
+            await SafeExtract.ExtractZipAsync(filePath, extractDir, _logger, cancellationToken: ct);
+            // The package must carry signed driver catalogs before anything is
+            // handed to pnputil - pnputil would refuse unsigned INFs on x64, but
+            // the explicit check stops unsigned packages earlier and clearly.
+            var catFiles = Directory.GetFiles(extractDir, "*.cat", SearchOption.AllDirectories);
+            if (catFiles.Length == 0)
+            {
+                _logger.LogError("No signed driver catalog (.cat) in DriverPack package");
+                progress?.Report(new InstallProgress(90, "No signed driver catalog (.cat) in package", 0, 0));
+                return false;
+            }
+            foreach (var cat in catFiles)
+            {
+                if (!FileVerification.VerifyCatalogSignature(cat, _logger))
+                {
+                    progress?.Report(new InstallProgress(90, $"Unsigned driver catalog: {Path.GetFileName(cat)}", 0, 0));
+                    return false;
+                }
+            }
 
             // Find INF files
             var infFiles = Directory.GetFiles(extractDir, "*.inf", SearchOption.AllDirectories);
@@ -196,7 +210,17 @@ public class DriverPackSource : BaseSource
             progress?.Report(new InstallProgress(95, "Installing driver via pnputil...", 0, 0));
 
             // Install via pnputil
-            var exitCode = await RunProcessAsync("pnputil.exe", $"/add-driver \"{extractDir}\\*.inf\" /subdirs /install", ct);
+            var pnputil = Path.Combine(Environment.SystemDirectory, "pnputil.exe");
+            var run = await ProcessRunner.RunAsync(new System.Diagnostics.ProcessStartInfo
+            {
+                FileName = pnputil,
+                Arguments = $"/add-driver \"{extractDir}\\*.inf\" /subdirs /install",
+                UseShellExecute = false,
+                CreateNoWindow = true,
+                RedirectStandardOutput = true,
+                RedirectStandardError = true
+            }, ct, timeoutMs: 20 * 60 * 1000, logger: _logger);
+            var exitCode = run.TimedOut ? -2 : run.ExitCode;
 
             if (exitCode == 0 || exitCode == 3010)
             {
@@ -218,30 +242,6 @@ public class DriverPackSource : BaseSource
             // Remove downloaded .zip / extracted package after the install attempt
             CleanupTemp(tempDir);
         }
-    }
-
-    private async Task<int> RunProcessAsync(string fileName, string arguments, CancellationToken ct)
-    {
-        return await Task.Run(() =>
-        {
-            var psi = new System.Diagnostics.ProcessStartInfo
-            {
-                FileName = fileName,
-                Arguments = arguments,
-                UseShellExecute = false,
-                CreateNoWindow = true,
-                RedirectStandardOutput = true,
-                RedirectStandardError = true
-            };
-
-            using var process = System.Diagnostics.Process.Start(psi);
-            if (process == null) return -1;
-
-            ct.Register(() => { try { process.Kill(); } catch { } });
-
-            process.WaitForExit();
-            return process.ExitCode;
-        }, ct);
     }
 
     private class DriverPackApiResponse

@@ -21,12 +21,12 @@ public class BackupService
             _logger.LogInformation("Creating restore point: {Description}", description);
 
             var drive = Environment.GetEnvironmentVariable("SystemDrive") ?? "C:";
-            var psCommand = "Enable-ComputerRestore -Drive '" + drive + "' -ErrorAction SilentlyContinue; " +
-                            "Checkpoint-Computer -Description '" + description + "' -RestorePointType MODIFY_SETTINGS";
+            var psCommand = "Enable-ComputerRestore -Drive " + PsQuote(drive) + " -ErrorAction SilentlyContinue; " +
+                            "Checkpoint-Computer -Description " + PsQuote(description) + " -RestorePointType MODIFY_SETTINGS";
             var psi = new System.Diagnostics.ProcessStartInfo
             {
                 FileName = "powershell.exe",
-                Arguments = "-NoProfile -ExecutionPolicy Bypass -Command \"" + psCommand + "\"",
+                Arguments = "-NoProfile -NonInteractive -ExecutionPolicy Bypass -Command " + PsQuote(psCommand),
                 Verb = "runas",
                 UseShellExecute = true,
                 WindowStyle = System.Diagnostics.ProcessWindowStyle.Hidden
@@ -38,7 +38,20 @@ public class BackupService
                 return new InstallResult { Success = false, Message = "Failed to start restore point creation" };
             }
 
-            await process.WaitForExitAsync(ct);
+            var cancelReg = ct.Register(() => { try { process.Kill(entireProcessTree: true); } catch { } });
+            try
+            {
+                await process.WaitForExitAsync(ct);
+            }
+            catch (OperationCanceledException)
+            {
+                try { process.Kill(entireProcessTree: true); } catch { }
+                throw;
+            }
+            finally
+            {
+                cancelReg.Dispose();
+            }
             
             if (process.ExitCode == 0)
             {
@@ -74,7 +87,7 @@ public class BackupService
             var psi = new System.Diagnostics.ProcessStartInfo
             {
                 FileName = System.IO.Path.Combine(Environment.SystemDirectory, "WindowsPowerShell", "v1.0", "powershell.exe"),
-                Arguments = $"-NoProfile -ExecutionPolicy Bypass -Command \"Export-WindowsDriver -Online -Destination '{destDir}'\"",
+                Arguments = "-NoProfile -NonInteractive -ExecutionPolicy Bypass -Command \"Export-WindowsDriver -Online -Destination " + PsQuote(destDir) + "\"",
                 UseShellExecute = false,
                 CreateNoWindow = true,
                 RedirectStandardOutput = true,
@@ -87,8 +100,8 @@ public class BackupService
                 return new InstallResult { Success = false, Message = "Failed to start driver backup" };
             }
 
-            // Kill the process on cancellation
-            var cancelReg = ct.Register(() => { try { process.Kill(); } catch { } });
+            // Kill the whole process tree on cancellation
+            var cancelReg = ct.Register(() => { try { process.Kill(entireProcessTree: true); } catch { } });
             var outputTask = process.StandardOutput.ReadToEndAsync();
             var errorTask = process.StandardError.ReadToEndAsync();
 
@@ -98,7 +111,7 @@ public class BackupService
             }
             catch (OperationCanceledException)
             {
-                try { process.Kill(); } catch { }
+                try { process.Kill(entireProcessTree: true); } catch { }
                 throw;
             }
             finally
@@ -159,7 +172,7 @@ public class BackupService
                 return new InstallResult { Success = false, Message = "Failed to start driver restore" };
             }
 
-            var cancelReg = ct.Register(() => { try { process.Kill(); } catch { } });
+            var cancelReg = ct.Register(() => { try { process.Kill(entireProcessTree: true); } catch { } });
             var outputTask = process.StandardOutput.ReadToEndAsync();
             var errorTask = process.StandardError.ReadToEndAsync();
 
@@ -169,7 +182,7 @@ public class BackupService
             }
             catch (OperationCanceledException)
             {
-                try { process.Kill(); } catch { }
+                try { process.Kill(entireProcessTree: true); } catch { }
                 throw;
             }
             finally
@@ -205,6 +218,10 @@ public class BackupService
             return new InstallResult { Success = false, Message = ex.Message };
         }
     }
+
+    /// PowerShell single-quoted string with proper escaping (' -> '').
+    /// Paths and descriptions reach PowerShell as data, never as code.
+    private static string PsQuote(string s) => "'" + s.Replace("'", "''") + "'";
 
     public List<string> ListBackups()
     {

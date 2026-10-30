@@ -102,37 +102,27 @@ public class ChocolateySource : BaseSource
 
     private async Task<string?> RunChocoAsync(string args, CancellationToken ct)
     {
-        return await Task.Run(() =>
+        try
         {
-            try
+            var run = await ProcessRunner.RunAsync(new System.Diagnostics.ProcessStartInfo
             {
-                var psi = new System.Diagnostics.ProcessStartInfo
-                {
-                    FileName = _chocoPath!,
-                    Arguments = args,
-                    UseShellExecute = false,
-                    CreateNoWindow = true,
-                    RedirectStandardOutput = true,
-                    RedirectStandardError = true,
-                    StandardOutputEncoding = System.Text.Encoding.UTF8,
-                    StandardErrorEncoding = System.Text.Encoding.UTF8
-                };
-
-                using var process = System.Diagnostics.Process.Start(psi);
-                if (process == null) return null;
-
-                ct.Register(() => { try { process.Kill(); } catch { } });
-
-                var output = process.StandardOutput.ReadToEnd();
-                process.WaitForExit();
-                return output;
-            }
-            catch (Exception ex)
-            {
-                _logger.LogWarning(ex, "Failed to run chocolatey");
-                return null;
-            }
-        }, ct);
+                FileName = _chocoPath!,
+                Arguments = args,
+                UseShellExecute = false,
+                CreateNoWindow = true,
+                RedirectStandardOutput = true,
+                RedirectStandardError = true,
+                StandardOutputEncoding = System.Text.Encoding.UTF8,
+                StandardErrorEncoding = System.Text.Encoding.UTF8
+            }, ct, timeoutMs: 30 * 60 * 1000, logger: _logger);
+            if (run.TimedOut) _logger.LogError("choco timed out after 30 min, process tree killed");
+            return run.TimedOut ? null : run.Output;
+        }
+        catch (Exception ex)
+        {
+            _logger.LogWarning(ex, "Failed to run chocolatey");
+            return null;
+        }
     }
 
     private static string? FindChoco()

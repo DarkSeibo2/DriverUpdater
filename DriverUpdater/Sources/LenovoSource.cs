@@ -23,6 +23,9 @@ public class LenovoSource : BaseSource
     private const string CatalogUrlTemplate = "https://download.lenovo.com/catalog/{0}_{1}.xml"; // e.g. 20K5_win11
     private const string CatalogHost = "download.lenovo.com";
 
+    /// <summary>Signers allowed to run a downloaded Lenovo installer.</summary>
+    private static readonly string[] LenovoPublishers = { "Lenovo" };
+
     public override UpdateSource SourceType => UpdateSource.Lenovo;
     public override string DisplayName => "Lenovo (System Update)";
     public override string Description => "Official Lenovo catalog - drivers for ThinkPad/ThinkCentre/ThinkStation/IdeaPad/Yoga/Legion machines";
@@ -282,44 +285,30 @@ public class LenovoSource : BaseSource
             progress?.Report(new InstallProgress(5, $"Downloading {update.Title}...", 0, 0));
             _logger.LogInformation("Lenovo: downloading {Url}", update.DownloadUrl);
 
-            // Scoped download with headers-first pattern (body copy doesn't hit the
-            // HttpClient timeout)
-            using (var response = await _httpClient.GetAsync(update.DownloadUrl, HttpCompletionOption.ResponseHeadersRead, ct))
-            {
-                response.EnsureSuccessStatusCode();
-                var total = response.Content.Headers.ContentLength ?? -1;
-                long done = 0;
-                var buffer = new byte[1 << 16];
-                int lastPct = -1;
-
-                await using (var src = await response.Content.ReadAsStreamAsync(ct))
-                await using (var dst = File.Create(installerPath))
+            // Hardened download: HTTPS-only, hard size cap, partial files removed
+            await SecureDownload.DownloadToFileAsync(
+                _httpClient, update.DownloadUrl, installerPath, SecureDownload.DefaultMaxBytes, ct,
+                progress: (done, total) =>
                 {
-                    int read;
-                    while ((read = await src.ReadAsync(buffer, ct)) > 0)
+                    if (total > 0)
                     {
-                        await dst.WriteAsync(buffer.AsMemory(0, read), ct);
-                        done += read;
-                        if (total > 0)
-                        {
-                            var pct = (int)(done * 100 / total);
-                            if (pct != lastPct)
-                            {
-                                lastPct = pct;
-                                progress?.Report(new InstallProgress(5 + pct * 45 / 100, $"Downloading {update.Title}... {pct}%", 0, 0));
-                            }
-                        }
+                        var pct = (int)(done * 100 / total);
+                        progress?.Report(new InstallProgress(5 + pct * 45 / 100,
+                            $"Downloading {update.Title}... {pct}%", 0, 0));
                     }
-                }
-            }
+                },
+                logger: _logger);
 
             ct.ThrowIfCancellationRequested();
-            progress?.Report(new InstallProgress(52, "Verifying package checksum...", 0, 0));
+            progress?.Report(new InstallProgress(52, "Verifying package...", 0, 0));
 
-            if (!FileVerification.VerifyChecksum(installerPath, update.FileChecksum, _logger))
+            // Gate: published SHA-1 (Lenovo catalog convention) + Authenticode
+            // signature bound to the Lenovo publisher. We are about to run this
+            // file with admin rights, so both checks must pass.
+            if (!FileVerification.VerifyInstallablePackage(installerPath, update.FileChecksum, LenovoPublishers, _logger, "Lenovo"))
             {
-                _logger.LogError("Lenovo installer checksum mismatch for {File}, aborting install", installerPath);
-                progress?.Report(new InstallProgress(95, "Checksum mismatch - package not trusted", 0, 0));
+                _logger.LogError("Lenovo installer verification failed for {File}, aborting install", installerPath);
+                progress?.Report(new InstallProgress(95, "Package verification failed - not trusted", 0, 0));
                 return false;
             }
 
@@ -449,39 +438,24 @@ public class LenovoSource : BaseSource
 
     private async Task<int> RunProcessAsync(string fileName, string arguments, CancellationToken ct, int timeoutMs)
     {
-        return await Task.Run(() =>
+        var psi = new System.Diagnostics.ProcessStartInfo
         {
-            var psi = new System.Diagnostics.ProcessStartInfo
-            {
-                FileName = fileName,
-                Arguments = arguments,
-                UseShellExecute = false,
-                CreateNoWindow = true,
-                RedirectStandardOutput = true,
-                RedirectStandardError = true
-            };
-            using var proc = System.Diagnostics.Process.Start(psi);
-            if (proc == null) return -1;
-
-            var cancelReg = ct.Register(() => { try { proc.Kill(); } catch { } });
-            try
-            {
-                if (!proc.WaitForExit(timeoutMs))
-                {
-                    _logger.LogError("Lenovo: process {Exe} timed out, killing", fileName);
-                    try { proc.Kill(); } catch { }
-                    return -2;
-                }
-                var stdout = proc.StandardOutput.ReadToEnd();
-                if (!string.IsNullOrWhiteSpace(stdout))
-                    _logger.LogInformation("Lenovo: {Exe} output: {Out}", Path.GetFileName(fileName), stdout.Trim());
-                return proc.ExitCode;
-            }
-            finally
-            {
-                cancelReg.Dispose();
-            }
-        }, ct);
+            FileName = fileName,
+            Arguments = arguments,
+            UseShellExecute = false,
+            CreateNoWindow = true,
+            RedirectStandardOutput = true,
+            RedirectStandardError = true
+        };
+        var run = await ProcessRunner.RunAsync(psi, ct, timeoutMs, _logger);
+        if (run.TimedOut)
+        {
+            _logger.LogError("Lenovo: process {Exe} timed out after {Ms} ms, process tree killed", fileName, timeoutMs);
+            return -2;
+        }
+        if (!string.IsNullOrWhiteSpace(run.Output))
+            _logger.LogInformation("Lenovo: {Exe} output: {Out}", Path.GetFileName(fileName), run.Output.Trim());
+        return run.ExitCode;
     }
 
     internal static DateTime? TryParseIsoDate(string? s)

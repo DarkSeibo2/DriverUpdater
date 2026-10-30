@@ -133,27 +133,17 @@ public class SDIOSource : BaseSource
 
     private async Task<int> RunSDIOAsync(string scriptPath, CancellationToken ct)
     {
-        return await Task.Run(() =>
+        var run = await ProcessRunner.RunAsync(new System.Diagnostics.ProcessStartInfo
         {
-            var psi = new System.Diagnostics.ProcessStartInfo
-            {
-                FileName = _sdioPath,
-                Arguments = $"-script:\"{scriptPath}\" -nogui",
-                WorkingDirectory = Path.GetDirectoryName(_sdioPath) ?? "",
-                UseShellExecute = false,
-                CreateNoWindow = true,
-                RedirectStandardOutput = true,
-                RedirectStandardError = true
-            };
-
-            using var process = System.Diagnostics.Process.Start(psi);
-            if (process == null) return -1;
-
-            ct.Register(() => { try { process.Kill(); } catch { } });
-
-            process.WaitForExit();
-            return process.ExitCode;
-        }, ct);
+            FileName = _sdioPath!,
+            Arguments = $"-script:\"{scriptPath}\" -nogui",
+            WorkingDirectory = Path.GetDirectoryName(_sdioPath) ?? "",
+            UseShellExecute = false,
+            CreateNoWindow = true,
+            RedirectStandardOutput = true,
+            RedirectStandardError = true
+        }, ct, timeoutMs: 30 * 60 * 1000, logger: _logger);
+        return run.TimedOut ? -2 : run.ExitCode;
     }
 
     private string? FindSDIO()

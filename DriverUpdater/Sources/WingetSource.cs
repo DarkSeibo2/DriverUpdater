@@ -126,29 +126,19 @@ public class WingetSource : BaseSource
 
     private async Task<string?> RunWingetAsync(string args, CancellationToken ct)
     {
-        return await Task.Run(() =>
+        var run = await ProcessRunner.RunAsync(new System.Diagnostics.ProcessStartInfo
         {
-            var psi = new System.Diagnostics.ProcessStartInfo
-            {
-                FileName = _wingetPath,
-                Arguments = args,
-                UseShellExecute = false,
-                CreateNoWindow = true,
-                RedirectStandardOutput = true,
-                RedirectStandardError = true,
-                StandardOutputEncoding = System.Text.Encoding.UTF8,
-                StandardErrorEncoding = System.Text.Encoding.UTF8
-            };
-
-            using var process = System.Diagnostics.Process.Start(psi);
-            if (process == null) return null;
-
-            ct.Register(() => { try { process.Kill(); } catch { } });
-
-            var output = process.StandardOutput.ReadToEnd();
-            process.WaitForExit();
-            return output;
-        }, ct);
+            FileName = _wingetPath!,
+            Arguments = args,
+            UseShellExecute = false,
+            CreateNoWindow = true,
+            RedirectStandardOutput = true,
+            RedirectStandardError = true,
+            StandardOutputEncoding = System.Text.Encoding.UTF8,
+            StandardErrorEncoding = System.Text.Encoding.UTF8
+        }, ct, timeoutMs: 30 * 60 * 1000, logger: _logger);
+        if (run.TimedOut) _logger.LogError("winget timed out after 30 min, process tree killed");
+        return run.TimedOut ? null : run.Output;
     }
 
     private static string ExtractColumn(string line, int start, int end)

@@ -60,31 +60,41 @@ public static class FileVerification
     /// signature from any other publisher still counts as untrusted.
     /// </summary>
     public static bool HasValidSignature(string filePath, string? subjectKeyword, ILogger? logger)
+        => HasAnyTrustedSigner(filePath, subjectKeyword is null ? null : [subjectKeyword], logger);
+
+    /// <summary>
+    /// Authenticode trust check with a publisher allowlist: the file must be
+    /// validly signed AND the signer must contain one of the expected keywords.
+    /// </summary>
+    public static bool HasAnyTrustedSigner(string filePath, IEnumerable<string>? subjectKeywords, ILogger? logger)
     {
         try
         {
-            var trust = VerifyAuthenticode(filePath);
+            var trust = VerifyAuthenticode(filePath, ActionGenericVerifyV2);
             if (trust != 0)
             {
                 logger?.LogError("Authenticode check FAILED for {File} (WinVerifyTrust=0x{Code:X8})", filePath, trust);
                 return false;
             }
 
-            if (!string.IsNullOrEmpty(subjectKeyword))
-            {
-                var signer = GetSignerName(filePath);
-                if (signer == null || !signer.Contains(subjectKeyword, StringComparison.OrdinalIgnoreCase))
-                {
-                    logger?.LogError("Signature publisher mismatch for {File}: '{Signer}' does not match '{Keyword}'",
-                        filePath, signer ?? "<none>", subjectKeyword);
-                    return false;
-                }
-                logger?.LogInformation("Signature OK: {File} signed by '{Signer}'", filePath, signer);
-            }
-            else
+            var keywords = subjectKeywords?
+                .Where(k => !string.IsNullOrWhiteSpace(k))
+                .ToList();
+
+            if (keywords is not { Count: > 0 })
             {
                 logger?.LogInformation("Signature OK (no publisher check): {File}", filePath);
+                return true;
             }
+
+            var signer = GetSignerName(filePath);
+            if (signer == null || !keywords.Any(k => signer.Contains(k, StringComparison.OrdinalIgnoreCase)))
+            {
+                logger?.LogError("Signature publisher mismatch for {File}: '{Signer}' does not match [{Keywords}]",
+                    filePath, signer ?? "<none>", string.Join(", ", keywords));
+                return false;
+            }
+            logger?.LogInformation("Signature OK: {File} signed by '{Signer}'", filePath, signer);
             return true;
         }
         catch (Exception ex)
@@ -92,6 +102,85 @@ public static class FileVerification
             logger?.LogError(ex, "Authenticode verification error for {File}", filePath);
             return false;
         }
+    }
+
+    /// <summary>
+    /// Verifies the Authenticode signature of a driver catalog (.cat) using the
+    /// driver verification policy. pnputil would refuse unsigned INFs on x64,
+    /// but the explicit check stops unsigned packages before anything is staged.
+    /// </summary>
+    public static bool VerifyCatalogSignature(string catPath, ILogger? logger)
+    {
+        try
+        {
+            var trust = VerifyAuthenticode(catPath, ActionDriverVerify);
+            if (trust != 0)
+            {
+                logger?.LogError("Catalog signature check FAILED for {File} (WinVerifyTrust=0x{Code:X8})", catPath, trust);
+                return false;
+            }
+            logger?.LogInformation("Catalog signature OK: {File}", catPath);
+            return true;
+        }
+        catch (Exception ex)
+        {
+            logger?.LogError(ex, "Catalog signature verification error for {File}", catPath);
+            return false;
+        }
+    }
+
+    /// <summary>Extensions that may be executed or handed to a driver installer.</summary>
+    public static readonly HashSet<string> ExecutablePackageExtensions =
+        new(StringComparer.OrdinalIgnoreCase) { ".exe", ".msi", ".msu" };
+
+    /// <summary>
+    /// The single gate every source must pass through before an installer is
+    /// run with admin rights:
+    ///  1. the file must actually be an executable package (.exe/.msi/.msu);
+    ///  2. the published checksum must match (warning only when the source
+    ///     publishes none);
+    ///  3. Authenticode signature must be valid and the signer must match one
+    ///     of the expected publisher keywords.
+    /// publisherKeywords == null means "unknown vendor" and always fails.
+    /// </summary>
+    public static bool VerifyInstallablePackage(
+        string filePath,
+        string? checksum,
+        IReadOnlyList<string>? publisherKeywords,
+        ILogger? logger,
+        string context = "")
+    {
+        var ext = Path.GetExtension(filePath);
+        if (!ExecutablePackageExtensions.Contains(ext))
+        {
+            logger?.LogError("{Ctx}: refusing to run a non-package file '{File}'", context, filePath);
+            return false;
+        }
+
+        if (string.IsNullOrWhiteSpace(checksum))
+        {
+            logger?.LogWarning("{Ctx}: source publishes no checksum for '{File}' - relying on the signature check only",
+                context, filePath);
+        }
+        else if (!VerifyChecksum(filePath, checksum, logger))
+        {
+            logger?.LogError("{Ctx}: checksum mismatch for '{File}', refusing to install", context, filePath);
+            return false;
+        }
+
+        if (publisherKeywords is not { Count: > 0 })
+        {
+            logger?.LogError("{Ctx}: no trusted publisher known for '{File}', refusing to install", context, filePath);
+            return false;
+        }
+
+        if (!HasAnyTrustedSigner(filePath, publisherKeywords, logger))
+        {
+            logger?.LogError("{Ctx}: signature verification failed for '{File}', refusing to install", context, filePath);
+            return false;
+        }
+
+        return true;
     }
 
     private static string? GetSignerName(string filePath)
@@ -145,8 +234,10 @@ public static class FileVerification
 
     // WINTRUST_ACTION_GENERIC_VERIFY_V2 = Authenticode (softpub.h)
     private static readonly Guid ActionGenericVerifyV2 = new("00AAC56B-CD44-11d0-8CC2-00C04FC295EE");
+    // DRIVER_ACTION_VERIFY = driver package / catalog policy (wintrust.h)
+    private static readonly Guid ActionDriverVerify = new("F750E6C3-3873-42EC-B154-58184A242A1E");
 
-    private static int VerifyAuthenticode(string filePath)
+    private static int VerifyAuthenticode(string filePath, Guid actionId)
     {
         var fileInfo = new WINTRUST_FILE_INFO
         {
@@ -160,7 +251,7 @@ public static class FileVerification
             pPolicyCallbackData = IntPtr.Zero,
             pSIPClientData = IntPtr.Zero,
             dwUIChoice = 2,                     // WTD_UI_NONE
-            fdwRevocationChecks = 0,            // WTD_REVOKE_NONE
+            fdwRevocationChecks = 0,            // WTD_REVOKE_NONE (see TODO below)
             dwUnionChoice = 1,                  // WTD_CHOICE_FILE
             pFile = Marshal.AllocHGlobal(Marshal.SizeOf<WINTRUST_FILE_INFO>()),
             dwStateAction = 0,                  // WTD_STATEACTION_IGNORE
@@ -173,7 +264,6 @@ public static class FileVerification
         try
         {
             Marshal.StructureToPtr(fileInfo, wtd.pFile, false);
-            var actionId = ActionGenericVerifyV2; // static readonly cannot be passed by ref
             return WinVerifyTrust(IntPtr.Zero, ref actionId, ref wtd);
         }
         finally
@@ -182,3 +272,8 @@ public static class FileVerification
         }
     }
 }
+
+// TODO(security): fdwRevocationChecks is WTD_REVOKE_NONE - revoked certificates
+// that are otherwise valid still pass. Switching to WTD_REVOKE_WHOLECHAIN would
+// enable CRL/OCSP checks but fails hard when the revocation servers are
+// unreachable; make it a user-visible setting before enabling it.

@@ -449,6 +449,33 @@ public class VendorSource : BaseSource
         string? tempDir = null;
         try
         {
+            if (!Uri.TryCreate(update.DownloadUrl, UriKind.Absolute, out var uri) ||
+                uri.Scheme != Uri.UriSchemeHttps)
+            {
+                _logger.LogError("Vendor install: download URL must be HTTPS, got '{Url}'", update.DownloadUrl);
+                return false;
+            }
+
+            // Scan sometimes falls back to the vendor page URL instead of a direct
+            // file link - refuse those early instead of downloading an HTML page.
+            var pathExt = Path.GetExtension(uri.LocalPath).ToLowerInvariant();
+            if (pathExt is ".html" or ".htm" or ".aspx" or ".php")
+            {
+                _logger.LogError("Vendor install: URL points to a web page, not a package: '{Url}'", update.DownloadUrl);
+                progress?.Report(new InstallProgress(95, "Download URL is a web page, not a driver package", 0, 0));
+                return false;
+            }
+
+            // Only known vendor hosts may be executed from; each maps to the
+            // signer(s) its installers are published with.
+            var publishers = PublishersForHost(uri.Host);
+            if (publishers == null)
+            {
+                _logger.LogError("Vendor install: refusing to run an installer from unknown host '{Host}'", uri.Host);
+                progress?.Report(new InstallProgress(95, $"Unknown download host '{uri.Host}' - installer not trusted", 0, 0));
+                return false;
+            }
+
             _logger.LogInformation("Vendor: installing {Title} for {Device}", update.Title, update.DeviceName);
             progress?.Report(new InstallProgress(0, "Downloading from vendor site...", 0, 0));
 
@@ -456,7 +483,6 @@ public class VendorSource : BaseSource
             Directory.CreateDirectory(tempDir);
 
             // Determine file extension from URL
-            var uri = new Uri(update.DownloadUrl);
             var fileName = Path.GetFileName(uri.LocalPath);
             if (string.IsNullOrEmpty(fileName) || !fileName.Contains('.'))
             {
@@ -464,28 +490,28 @@ public class VendorSource : BaseSource
             }
             var filePath = Path.Combine(tempDir, fileName);
 
-            // Download with progress
-            using var response = await _httpClient.GetAsync(update.DownloadUrl, HttpCompletionOption.ResponseHeadersRead, ct);
-            response.EnsureSuccessStatusCode();
-
-            var totalBytes = response.Content.Headers.ContentLength ?? -1;
-            var downloaded = 0L;
-
-            using var stream = await response.Content.ReadAsStreamAsync(ct);
-            using var fileStream = File.Create(filePath);
-
-            var buffer = new byte[81920];
-            int bytesRead;
-            while ((bytesRead = await stream.ReadAsync(buffer, ct)) > 0)
-            {
-                await fileStream.WriteAsync(buffer.AsMemory(0, bytesRead), ct);
-                downloaded += bytesRead;
-
-                if (totalBytes > 0)
+            // Hardened download: HTTPS-only, hard size cap, partial files removed
+            await SecureDownload.DownloadToFileAsync(
+                _httpClient, update.DownloadUrl, filePath, SecureDownload.DefaultMaxBytes, ct,
+                progress: (done, total) =>
                 {
-                    var pct = (int)(80.0 * downloaded / totalBytes);
-                    progress?.Report(new InstallProgress(pct, $"Downloading: {downloaded / 1024 / 1024:N1} / {totalBytes / 1024 / 1024:N1} MB", downloaded, totalBytes));
-                }
+                    if (total > 0)
+                    {
+                        var pct = (int)(80.0 * done / total);
+                        progress?.Report(new InstallProgress(pct,
+                            $"Downloading: {done / 1024 / 1024:N1} / {total / 1024 / 1024:N1} MB", done, total));
+                    }
+                },
+                logger: _logger);
+
+            progress?.Report(new InstallProgress(82, "Verifying package...", 0, 0));
+
+            // We are about to execute this file with admin rights: checksum (when
+            // published) + Authenticode signature bound to the vendor's signer.
+            if (!FileVerification.VerifyInstallablePackage(filePath, update.FileChecksum, publishers, _logger, "Vendor"))
+            {
+                progress?.Report(new InstallProgress(95, "Package verification failed - installer not trusted", 0, 0));
+                return false;
             }
 
             progress?.Report(new InstallProgress(85, "Running installer...", 0, 0));
@@ -515,43 +541,57 @@ public class VendorSource : BaseSource
         }
     }
 
+    /// <summary>
+    /// Maps a download host to the signer(s) its installers must be published
+    /// with. Returns null for unknown hosts - their installers are never run.
+    /// </summary>
+    private static IReadOnlyList<string>? PublishersForHost(string host)
+    {
+        if (host.EndsWith("intel.com", StringComparison.OrdinalIgnoreCase)) return new[] { "Intel" };
+        if (host.EndsWith("amd.com", StringComparison.OrdinalIgnoreCase) ||
+            host.EndsWith("ati.com", StringComparison.OrdinalIgnoreCase))
+            return new[] { "Advanced Micro Devices", "AMD" };
+        if (host.EndsWith("nvidia.com", StringComparison.OrdinalIgnoreCase)) return new[] { "NVIDIA" };
+        if (host.EndsWith("realtek.com", StringComparison.OrdinalIgnoreCase)) return new[] { "Realtek" };
+        return null;
+    }
+
     private async Task<int> RunInstallerAsync(string filePath, CancellationToken ct)
     {
-        return await Task.Run(() =>
+        var ext = Path.GetExtension(filePath).ToLower();
+        var psi = new System.Diagnostics.ProcessStartInfo
         {
-            var ext = Path.GetExtension(filePath).ToLower();
-            var psi = new System.Diagnostics.ProcessStartInfo
-            {
-                FileName = filePath,
-                UseShellExecute = false,
-                CreateNoWindow = true,
-                RedirectStandardOutput = true,
-                RedirectStandardError = true
-            };
+            FileName = filePath,
+            UseShellExecute = false,
+            CreateNoWindow = true,
+            RedirectStandardOutput = true,
+            RedirectStandardError = true
+        };
 
-            // Silent install arguments based on file type
-            switch (ext)
-            {
-                case ".exe":
-                    psi.Arguments = "/s /norestart /quiet";
-                    break;
-                case ".msi":
-                    psi.FileName = "msiexec.exe";
-                    psi.Arguments = $"/i \"{filePath}\" /qn /norestart";
-                    break;
-                default:
-                    psi.Arguments = "/quiet /norestart";
-                    break;
-            }
+        // Silent install arguments based on file type
+        switch (ext)
+        {
+            case ".exe":
+                psi.Arguments = "/s /norestart /quiet";
+                break;
+            case ".msi":
+                psi.FileName = "msiexec.exe";
+                psi.Arguments = $"/i \"{filePath}\" /qn /norestart";
+                break;
+            default:
+                psi.Arguments = "/quiet /norestart";
+                break;
+        }
 
-            using var process = System.Diagnostics.Process.Start(psi);
-            if (process == null) return -1;
-
-            ct.Register(() => { try { process.Kill(); } catch { } });
-
-            process.WaitForExit(300000); // 5 min timeout
-            return process.ExitCode;
-        }, ct);
+        var run = await ProcessRunner.RunAsync(psi, ct, timeoutMs: 10 * 60 * 1000, logger: _logger);
+        if (run.TimedOut)
+        {
+            _logger.LogError("Vendor installer timed out after 10 min, process tree killed");
+            return -2;
+        }
+        if (!string.IsNullOrWhiteSpace(run.Output))
+            _logger.LogInformation("Vendor installer output: {Out}", run.Output.Trim());
+        return run.ExitCode;
     }
 }
 

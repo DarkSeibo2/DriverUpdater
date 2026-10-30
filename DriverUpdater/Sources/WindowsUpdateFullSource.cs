@@ -141,46 +141,33 @@ public class WindowsUpdateFullSource : BaseSource
 
     private async Task<string?> RunPowerShellScriptAsync(string script, CancellationToken ct)
     {
-        return await Task.Run(() =>
+        try
         {
-            try
+            var psExe = Path.Combine(Environment.SystemDirectory, "WindowsPowerShell", "v1.0", "powershell.exe");
+            var encoded = Convert.ToBase64String(Encoding.Unicode.GetBytes(script));
+            var psi = new System.Diagnostics.ProcessStartInfo
             {
-                var psExe = Path.Combine(Environment.SystemDirectory, "WindowsPowerShell", "v1.0", "powershell.exe");
-                var encoded = Convert.ToBase64String(Encoding.Unicode.GetBytes(script));
-                var psi = new System.Diagnostics.ProcessStartInfo
-                {
-                    FileName = psExe,
-                    Arguments = $"-NoProfile -NonInteractive -ExecutionPolicy Bypass -EncodedCommand {encoded}",
-                    UseShellExecute = false,
-                    RedirectStandardOutput = true,
-                    RedirectStandardError = true,
-                    CreateNoWindow = true
-                };
+                FileName = psExe,
+                Arguments = $"-NoProfile -NonInteractive -ExecutionPolicy Bypass -EncodedCommand {encoded}",
+                UseShellExecute = false,
+                RedirectStandardOutput = true,
+                RedirectStandardError = true,
+                CreateNoWindow = true
+            };
 
-                using var process = System.Diagnostics.Process.Start(psi);
-                if (process == null) return null;
-
-                var cancelReg = ct.Register(() => { try { process.Kill(); } catch { } });
-                try
-                {
-                    while (!process.WaitForExit(500))
-                    {
-                        ct.ThrowIfCancellationRequested();
-                    }
-                }
-                finally
-                {
-                    cancelReg.Dispose();
-                }
-                var output = process.StandardOutput.ReadToEnd();
-                return string.IsNullOrEmpty(output) ? null : output;
-            }
-            catch (Exception ex)
+            var run = await ProcessRunner.RunAsync(psi, ct, timeoutMs: 30 * 60 * 1000, logger: _logger);
+            if (run.ExitCode != 0)
             {
-                _logger.LogError(ex, "Failed to run PowerShell script");
-                return null;
+                _logger.LogWarning("PowerShell exited with code {Code}. Output: {Out}", run.ExitCode, run.Output);
             }
-        }, ct);
+
+            return string.IsNullOrEmpty(run.Output) ? null : run.Output;
+        }
+        catch (Exception ex)
+        {
+            _logger.LogError(ex, "Failed to run PowerShell script");
+            return null;
+        }
     }
 
     private static List<WuFullResult> ParseJsonArray(string json)

@@ -237,47 +237,33 @@ public class MicrosoftCatalogSource : BaseSource
             var fileName = Path.GetFileName(new Uri(downloadUrl).LocalPath);
             var filePath = Path.Combine(tempDir, fileName);
 
-            // Download with progress (throttled: report on text change only).
-            // The whole block is scoped so the downloaded file is CLOSED before
-            // extraction - expand.exe cannot read a cab held open with a FileStream.
+            // Hardened download: HTTPS-only, hard size cap, partial files removed.
+            // The file is closed by the time this returns - expand.exe cannot
+            // read a cab held open with a FileStream.
+            try
             {
-                using var response = await _httpClient.GetAsync(downloadUrl, HttpCompletionOption.ResponseHeadersRead, ct);
-                response.EnsureSuccessStatusCode();
-
-                var totalBytes = response.Content.Headers.ContentLength ?? -1;
-                var downloaded = 0L;
-                string lastText = "";
-
-                using var stream = await response.Content.ReadAsStreamAsync(ct);
-                await using var fileStream = File.Create(filePath);
-
-                var buffer = new byte[81920];
-                int bytesRead;
-                while ((bytesRead = await stream.ReadAsync(buffer, ct)) > 0)
-                {
-                    await fileStream.WriteAsync(buffer.AsMemory(0, bytesRead), ct);
-                    downloaded += bytesRead;
-
-                    var text = totalBytes > 0
-                        ? $"Downloading: {downloaded / 1024.0 / 1024.0:0.0} / {totalBytes / 1024.0 / 1024.0:0.0} MB"
-                        : $"Downloading: {downloaded / 1024.0 / 1024.0:0.0} MB";
-
-                    if (text != lastText)
+                string? lastText = null;
+                await SecureDownload.DownloadToFileAsync(
+                    _httpClient, downloadUrl, filePath, SecureDownload.DefaultMaxBytes, ct,
+                    progress: (done, total) =>
                     {
+                        var text = total > 0
+                            ? $"Downloading: {done / 1024.0 / 1024.0:0.0} / {total / 1024.0 / 1024.0:0.0} MB"
+                            : $"Downloading: {done / 1024.0 / 1024.0:0.0} MB";
+                        if (text == lastText) return;
                         lastText = text;
-                        var pct = totalBytes > 0
-                            ? 10 + (int)(80.0 * downloaded / totalBytes)
-                            : 10 + (int)(80.0 * Math.Min(1.0, downloaded / (50.0 * 1024 * 1024)));
-                        progress?.Report(new InstallProgress(pct, text, downloaded, totalBytes));
-                    }
-                }
-
-                if (downloaded == 0)
-                {
-                    _logger.LogError("Downloaded 0 bytes for update {Id} from {Url}", update.Id, downloadUrl);
-                    progress?.Report(new InstallProgress(10, "Download failed: 0 bytes received", 0, 0));
-                    return false;
-                }
+                        var pct = total > 0
+                            ? 10 + (int)(80.0 * done / total)
+                            : 10 + (int)(80.0 * Math.Min(1.0, done / (50.0 * 1024 * 1024)));
+                        progress?.Report(new InstallProgress(pct, text, done, total));
+                    },
+                    logger: _logger);
+            }
+            catch (Exception ex)
+            {
+                _logger.LogError("Download failed for update {Id} from {Url}: {Msg}", update.Id, downloadUrl, ex.Message);
+                progress?.Report(new InstallProgress(10, $"Download failed: {ex.Message}", 0, 0));
+                return false;
             }
 
             progress?.Report(new InstallProgress(90, "Extracting...", 0, 0));
@@ -297,10 +283,21 @@ public class MicrosoftCatalogSource : BaseSource
                     progress?.Report(new InstallProgress(90, $"Extraction failed (exit {expand.ExitCode})", 0, 0));
                     return false;
                 }
+                // expand.exe has no built-in limits - cap the extracted tree
+                try
+                {
+                    SafeExtract.VerifyExtractedTree(extractDir);
+                }
+                catch (Exception ex)
+                {
+                    _logger.LogError("Extracted cab exceeds limits: {Msg}", ex.Message);
+                    progress?.Report(new InstallProgress(90, "Extracted package exceeds size limits", 0, 0));
+                    return false;
+                }
             }
             else if (filePath.EndsWith(".zip", StringComparison.OrdinalIgnoreCase))
             {
-                System.IO.Compression.ZipFile.ExtractToDirectory(filePath, extractDir, true);
+                await SafeExtract.ExtractZipAsync(filePath, extractDir, _logger, cancellationToken: ct);
             }
             else
             {
@@ -316,6 +313,24 @@ public class MicrosoftCatalogSource : BaseSource
                 _logger.LogError("No INF files found in package");
                 progress?.Report(new InstallProgress(90, "No INF files found in package", 0, 0));
                 return false;
+            }
+
+            // Catalog packages are WHQL-signed; verify every catalog before the
+            // INFs are handed to pnputil (stops unsigned/staged packages early).
+            var catFiles = Directory.GetFiles(extractDir, "*.cat", SearchOption.AllDirectories);
+            if (catFiles.Length == 0)
+            {
+                _logger.LogError("No signed driver catalog (.cat) in package");
+                progress?.Report(new InstallProgress(90, "No signed driver catalog (.cat) in package", 0, 0));
+                return false;
+            }
+            foreach (var cat in catFiles)
+            {
+                if (!FileVerification.VerifyCatalogSignature(cat, _logger))
+                {
+                    progress?.Report(new InstallProgress(90, $"Unsigned driver catalog: {Path.GetFileName(cat)}", 0, 0));
+                    return false;
+                }
             }
 
             progress?.Report(new InstallProgress(95, "Installing driver...", 0, 0));
@@ -365,7 +380,7 @@ public class MicrosoftCatalogSource : BaseSource
             var response = await _httpClient.PostAsync(DownloadUrl, content, ct);
             var html = await response.Content.ReadAsStringAsync(ct);
 
-            var match = Regex.Match(html, @"url\s*=\s*'(https?://[^']+\.(cab|zip|exe|msu))'", RegexOptions.IgnoreCase);
+            var match = Regex.Match(html, @"url\s*=\s*'(https://[^']+\.(cab|zip|exe|msu))'", RegexOptions.IgnoreCase);
             DiagLog($"downloadUrl: updateId={updateId} htmlLen={html.Length} match={match.Success}");
             if (match.Success)
             {
@@ -409,6 +424,8 @@ public class MicrosoftCatalogSource : BaseSource
     }
 
     /// Runs a process, captures stdout+stderr, reports notable output lines via progress.
+    /// Uses ProcessRunner: async output reads (no pipe deadlocks) and whole-tree
+    /// kill on timeout/cancellation.
     private async Task<ProcessResult> RunProcessWithOutputAsync(string fileName, string arguments, string progressLabel, CancellationToken ct, IProgress<InstallProgress>? progress = null)
     {
         var resolved = fileName.Equals("expand.exe", StringComparison.OrdinalIgnoreCase) || fileName.Equals("pnputil.exe", StringComparison.OrdinalIgnoreCase)
@@ -417,7 +434,7 @@ public class MicrosoftCatalogSource : BaseSource
 
         DiagLog($"proc start: exe={resolved} args={arguments} cwd={Environment.CurrentDirectory}");
 
-        var psi = new System.Diagnostics.ProcessStartInfo
+        var run = await ProcessRunner.RunAsync(new System.Diagnostics.ProcessStartInfo
         {
             FileName = resolved,
             Arguments = arguments,
@@ -427,58 +444,18 @@ public class MicrosoftCatalogSource : BaseSource
             RedirectStandardError = true,
             StandardOutputEncoding = System.Text.Encoding.UTF8,
             StandardErrorEncoding = System.Text.Encoding.UTF8
-        };
+        }, ct, timeoutMs: 30 * 60 * 1000,
+            onLine: line =>
+            {
+                if (line.Length <= 140)
+                    progress?.Report(new InstallProgress(0, $"{progressLabel}: {line}", 0, 0));
+            });
 
-        System.Diagnostics.Process? process;
-        try
-        {
-            process = System.Diagnostics.Process.Start(psi);
-        }
-        catch (Exception ex)
-        {
-            DiagLog($"proc start FAILED: {ex}");
-            return new ProcessResult(-1, ex.Message);
-        }
-        if (process == null)
-        {
-            DiagLog("proc start returned null");
-            return new ProcessResult(-1, "");
-        }
+        DiagLog($"proc exit: code={run.ExitCode} timedOut={run.TimedOut}");
+        if (run.ExitCode != 0 || run.TimedOut)
+            DiagLog($"output:\n{run.Output}");
 
-        var lines = new List<string>();
-        void OnLine(string line)
-        {
-            if (string.IsNullOrWhiteSpace(line)) return;
-            line = line.Trim();
-            lock (lines) { lines.Add(line); }
-            if (line.Length <= 140)
-                progress?.Report(new InstallProgress(0, $"{progressLabel}: {line}", 0, 0));
-        }
-
-        process.OutputDataReceived += (_, e) => OnLine(e.Data ?? "");
-        process.ErrorDataReceived += (_, e) => OnLine(e.Data ?? "");
-        process.BeginOutputReadLine();
-        process.BeginErrorReadLine();
-
-        var reg = ct.Register(() => { try { DiagLog("proc KILLED by cancellation"); process.Kill(); } catch { } });
-
-        try
-        {
-            await process.WaitForExitAsync(ct);
-        }
-        finally
-        {
-            reg.Dispose();
-        }
-
-        string output;
-        lock (lines) { output = string.Join(Environment.NewLine, lines); }
-
-        DiagLog($"proc exit: code={process.ExitCode} lines={lines.Count}");
-        if (process.ExitCode != 0)
-            DiagLog($"output:\n{output}");
-
-        return new ProcessResult(process.ExitCode, output);
+        return new ProcessResult(run.ExitCode, run.Output);
     }
 
     private static string Truncate(string s, int max) => s.Length <= max ? s : s[..(max - 3)] + "...";

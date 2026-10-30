@@ -138,49 +138,37 @@ public class WindowsUpdateSource : BaseSource
 
     private async Task<string?> RunPowerShellScriptAsync(string script, CancellationToken ct)
     {
-        return await Task.Run(() =>
+        try
         {
-            try
+            var psExe = Path.Combine(Environment.SystemDirectory, "WindowsPowerShell", "v1.0", "powershell.exe");
+            var encoded = Convert.ToBase64String(Encoding.Unicode.GetBytes(script));
+            var psi = new ProcessStartInfo
             {
-                var psExe = Path.Combine(Environment.SystemDirectory, "WindowsPowerShell", "v1.0", "powershell.exe");
-                var encoded = Convert.ToBase64String(Encoding.Unicode.GetBytes(script));
-                var psi = new ProcessStartInfo
-                {
-                    FileName = psExe,
-                    Arguments = $"-NoProfile -NonInteractive -ExecutionPolicy Bypass -EncodedCommand {encoded}",
-                    UseShellExecute = false,
-                    RedirectStandardOutput = true,
-                    RedirectStandardError = true,
-                    CreateNoWindow = true
-                };
+                FileName = psExe,
+                Arguments = $"-NoProfile -NonInteractive -ExecutionPolicy Bypass -EncodedCommand {encoded}",
+                UseShellExecute = false,
+                RedirectStandardOutput = true,
+                RedirectStandardError = true,
+                CreateNoWindow = true
+            };
 
-                using var process = Process.Start(psi);
-                if (process == null) return null;
-
-                while (!process.WaitForExit(500))
-                {
-                    ct.ThrowIfCancellationRequested();
-                }
-                var output = process.StandardOutput.ReadToEnd();
-                var err = process.StandardError.ReadToEnd();
-
-                if (process.ExitCode != 0)
-                {
-                    _logger.LogWarning("PowerShell exited with code {Code}. Stderr: {Err}", process.ExitCode, err);
-                }
-
-                return string.IsNullOrEmpty(output) ? null : output;
-            }
-            catch (OperationCanceledException)
+            var run = await ProcessRunner.RunAsync(psi, ct, timeoutMs: 30 * 60 * 1000, logger: _logger);
+            if (run.ExitCode != 0)
             {
-                throw;
+                _logger.LogWarning("PowerShell exited with code {Code}. Output: {Out}", run.ExitCode, run.Output);
             }
-            catch (Exception ex)
-            {
-                _logger.LogError(ex, "Failed to run PowerShell script");
-                return null;
-            }
-        }, ct);
+
+            return string.IsNullOrEmpty(run.Output) ? null : run.Output;
+        }
+        catch (OperationCanceledException)
+        {
+            throw;
+        }
+        catch (Exception ex)
+        {
+            _logger.LogError(ex, "Failed to run PowerShell script");
+            return null;
+        }
     }
 
     private class WuResult

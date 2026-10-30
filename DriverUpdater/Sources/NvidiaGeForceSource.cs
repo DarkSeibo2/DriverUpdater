@@ -22,6 +22,9 @@ public class NvidiaGeForceSource : BaseSource
     private const string LookupUrlBase = "https://www.nvidia.com/Download/API/lookupValueSearch.aspx";
     private const string DriverLookupUrl = "https://gfwsl.geforce.com/services_toolkit/services/com/nvidia/services/AjaxDriverService.php?func=DriverManualLookup&osID={0}&languageCode=1033&isWHQL=1&dch=1&dltype=-1&numberOfResults=15&psid={1}&pfid={2}";
 
+    /// <summary>Signers allowed to run a downloaded NVIDIA installer.</summary>
+    private static readonly string[] NvidiaPublishers = { "NVIDIA" };
+
     // Product type IDs (from lookupValueSearch TypeID=1): value -> name keyword
     private static readonly (int ParentId, string[] Keywords, string Label)[] ProductTypes =
     {
@@ -368,91 +371,48 @@ public class NvidiaGeForceSource : BaseSource
             progress?.Report(new InstallProgress(5, $"Downloading NVIDIA {update.Version}...", 0, 0));
             _logger.LogInformation("NVIDIA: downloading {Url}", update.DownloadUrl);
 
-            // Scoped download; ResponseHeadersRead keeps the 100s HttpClient
-            // timeout away from the bulk payload (same pattern as Catalog source)
-            using (var response = await _httpClient.GetAsync(update.DownloadUrl, HttpCompletionOption.ResponseHeadersRead, ct))
-            {
-                response.EnsureSuccessStatusCode();
-                var total = response.Content.Headers.ContentLength ?? -1;
-                long done = 0;
-                var buffer = new byte[1 << 16];
-
-                await using (var src = await response.Content.ReadAsStreamAsync(ct))
-                await using (var dst = File.Create(filePath))
+            // Hardened download: HTTPS-only, hard size cap, partial files removed
+            await SecureDownload.DownloadToFileAsync(
+                _httpClient, update.DownloadUrl, filePath, SecureDownload.DefaultMaxBytes, ct,
+                progress: (done, total) =>
                 {
-                    int read;
-                    int lastPct = -1;
-                    while ((read = await src.ReadAsync(buffer, ct)) > 0)
+                    if (total > 0)
                     {
-                        await dst.WriteAsync(buffer.AsMemory(0, read), ct);
-                        done += read;
-                        if (total > 0)
-                        {
-                            var pct = (int)(done * 100 / total);
-                            if (pct != lastPct)
-                            {
-                                lastPct = pct;
-                                progress?.Report(new InstallProgress(5 + pct * 55 / 100,
-                                    $"Downloading NVIDIA {update.Version}... {pct}%", pct, 100));
-                            }
-                        }
+                        var pct = (int)(done * 100 / total);
+                        progress?.Report(new InstallProgress(5 + pct * 55 / 100,
+                            $"Downloading NVIDIA {update.Version}... {pct}%", pct, 100));
                     }
-                }
-            }
+                },
+                logger: _logger);
 
             ct.ThrowIfCancellationRequested();
-            progress?.Report(new InstallProgress(58, "Verifying installer signature...", 0, 0));
+            progress?.Report(new InstallProgress(58, "Verifying installer...", 0, 0));
 
-            // We are about to execute this file with admin rights: the Authenticode
-            // check is here so that a tampered/redirected download cannot be run.
-            if (!FileVerification.HasValidSignature(filePath, "NVIDIA", _logger))
+            // We are about to execute this file with admin rights: checksum (when
+            // published) + Authenticode signature bound to the NVIDIA publisher,
+            // so a tampered/redirected download cannot be run.
+            if (!FileVerification.VerifyInstallablePackage(filePath, update.FileChecksum, NvidiaPublishers, _logger, "NVIDIA"))
             {
-                _logger.LogError("NVIDIA installer signature verification failed, aborting install");
-                progress?.Report(new InstallProgress(95, "Signature verification failed - installer not trusted", 0, 0));
+                progress?.Report(new InstallProgress(95, "Package verification failed - installer not trusted", 0, 0));
                 return false;
             }
 
             progress?.Report(new InstallProgress(60, $"Installing NVIDIA {update.Version} (this can take several minutes)...", 0, 0));
 
-            var exitCode = await Task.Run(() =>
+            var psi = new System.Diagnostics.ProcessStartInfo
             {
-                var psi = new System.Diagnostics.ProcessStartInfo
-                {
-                    FileName = filePath,
-                    Arguments = "-s -noreboot -noeula",
-                    UseShellExecute = false,
-                    CreateNoWindow = true,
-                    RedirectStandardOutput = true,
-                    RedirectStandardError = true
-                };
-                using var proc = System.Diagnostics.Process.Start(psi);
-                if (proc == null) return -1;
-
-                var cancelReg = ct.Register(() => { try { proc.Kill(); } catch { } });
-                try
-                {
-                    var stdout = new System.Text.StringBuilder();
-                    var stderr = new System.Text.StringBuilder();
-                    proc.OutputDataReceived += (_, e) => { if (e.Data != null) stdout.AppendLine(e.Data); };
-                    proc.ErrorDataReceived += (_, e) => { if (e.Data != null) stderr.AppendLine(e.Data); };
-                    proc.BeginOutputReadLine();
-                    proc.BeginErrorReadLine();
-
-                    if (!proc.WaitForExit(45 * 60 * 1000))
-                    {
-                        _logger.LogError("NVIDIA installer timed out, killing");
-                        try { proc.Kill(); } catch { }
-                        return -2;
-                    }
-                    _logger.LogInformation("NVIDIA installer output: {Out}", stdout.ToString().Trim());
-                    if (stderr.Length > 0) _logger.LogInformation("NVIDIA installer stderr: {Err}", stderr.ToString().Trim());
-                    return proc.ExitCode;
-                }
-                finally
-                {
-                    cancelReg.Dispose();
-                }
-            }, ct);
+                FileName = filePath,
+                Arguments = "-s -noreboot -noeula",
+                UseShellExecute = false,
+                CreateNoWindow = true,
+                RedirectStandardOutput = true,
+                RedirectStandardError = true
+            };
+            var run = await ProcessRunner.RunAsync(psi, ct, timeoutMs: 45 * 60 * 1000, logger: _logger);
+            if (run.TimedOut) _logger.LogError("NVIDIA installer timed out after 45 min");
+            if (!string.IsNullOrWhiteSpace(run.Output))
+                _logger.LogInformation("NVIDIA installer output: {Out}", run.Output.Trim());
+            var exitCode = run.TimedOut ? -2 : run.ExitCode;
 
             progress?.Report(new InstallProgress(95, $"NVIDIA installer exit code {exitCode}", 0, 0));
 
