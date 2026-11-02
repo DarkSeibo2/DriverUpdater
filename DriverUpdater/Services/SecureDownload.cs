@@ -24,10 +24,17 @@ public static class SecureDownload
         long maxBytes = DefaultMaxBytes,
         CancellationToken ct = default,
         Action<long, long>? progress = null,
-        ILogger? logger = null)
+        ILogger? logger = null,
+        IReadOnlyCollection<string>? allowedDomains = null)
     {
         if (!Uri.TryCreate(url, UriKind.Absolute, out var uri) || uri.Scheme != Uri.UriSchemeHttps)
             throw new InvalidOperationException($"Download URL must be HTTPS: '{url}'");
+
+        // The caller already matched the initial host; keep it inside the same
+        // allowlist here so a direct call cannot bypass that check.
+        if (allowedDomains is { Count: > 0 } && !HostMatcher.IsAllowed(uri.Host, allowedDomains))
+            throw new InvalidOperationException(
+                $"Download host '{uri.Host}' is not in the allowed list for '{url}'");
 
         try
         {
@@ -38,6 +45,11 @@ public static class SecureDownload
             var finalUri = response.RequestMessage?.RequestUri ?? uri;
             if (finalUri.Scheme != Uri.UriSchemeHttps)
                 throw new InvalidOperationException($"Redirect downgraded HTTPS to '{finalUri.Scheme}' for '{url}'");
+
+            // A redirect must not move the download to an unrelated host.
+            if (allowedDomains is { Count: > 0 } && !HostMatcher.IsAllowed(finalUri.Host, allowedDomains))
+                throw new InvalidOperationException(
+                    $"Redirect left the allowed hosts ('{finalUri.Host}') for '{url}'");
 
             var declared = response.Content.Headers.ContentLength;
             if (declared.HasValue && declared.Value > maxBytes)

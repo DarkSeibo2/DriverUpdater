@@ -155,8 +155,7 @@ public class DriverPackSource : BaseSource
             _logger.LogInformation("DriverPack: installing {Title} for {Device}", update.Title, update.DeviceName);
             progress?.Report(new InstallProgress(0, "Downloading from DriverPack...", 0, 0));
 
-            tempDir = Path.Combine(_settings.Settings.TempDirectory, $"drvp_{update.Id}");
-            Directory.CreateDirectory(tempDir);
+            tempDir = CreateTempDirectory("drvp");
 
             var filePath = Path.Combine(tempDir, "driver_package.zip"); // DriverPack typically returns ZIP
 

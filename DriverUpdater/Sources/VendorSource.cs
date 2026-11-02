@@ -467,9 +467,10 @@ public class VendorSource : BaseSource
             }
 
             // Only known vendor hosts may be executed from; each maps to the
-            // signer(s) its installers are published with.
-            var publishers = PublishersForHost(uri.Host);
-            if (publishers == null)
+            // signer(s) its installers are published with and the domains the
+            // download (including redirects) must stay inside.
+            var policy = GetVendorPolicy(uri.Host);
+            if (policy == null)
             {
                 _logger.LogError("Vendor install: refusing to run an installer from unknown host '{Host}'", uri.Host);
                 progress?.Report(new InstallProgress(95, $"Unknown download host '{uri.Host}' - installer not trusted", 0, 0));
@@ -479,8 +480,7 @@ public class VendorSource : BaseSource
             _logger.LogInformation("Vendor: installing {Title} for {Device}", update.Title, update.DeviceName);
             progress?.Report(new InstallProgress(0, "Downloading from vendor site...", 0, 0));
 
-            tempDir = Path.Combine(_settings.Settings.TempDirectory, $"vendor_{update.Id}");
-            Directory.CreateDirectory(tempDir);
+            tempDir = CreateTempDirectory("vendor");
 
             // Determine file extension from URL
             var fileName = Path.GetFileName(uri.LocalPath);
@@ -502,13 +502,14 @@ public class VendorSource : BaseSource
                             $"Downloading: {done / 1024 / 1024:N1} / {total / 1024 / 1024:N1} MB", done, total));
                     }
                 },
-                logger: _logger);
+                logger: _logger,
+                allowedDomains: policy.Domains);
 
             progress?.Report(new InstallProgress(82, "Verifying package...", 0, 0));
 
             // We are about to execute this file with admin rights: checksum (when
             // published) + Authenticode signature bound to the vendor's signer.
-            if (!FileVerification.VerifyInstallablePackage(filePath, update.FileChecksum, publishers, _logger, "Vendor"))
+            if (!FileVerification.VerifyInstallablePackage(filePath, update.FileChecksum, policy.Publishers, _logger, "Vendor"))
             {
                 progress?.Report(new InstallProgress(95, "Package verification failed - installer not trusted", 0, 0));
                 return false;
@@ -541,18 +542,30 @@ public class VendorSource : BaseSource
         }
     }
 
+    private sealed record VendorPolicy(
+        IReadOnlyList<string> Publishers,
+        IReadOnlyList<string> Domains);
+
     /// <summary>
     /// Maps a download host to the signer(s) its installers must be published
-    /// with. Returns null for unknown hosts - their installers are never run.
+    /// with and the domains the transfer must stay inside. Returns null for
+    /// unknown hosts - their installers are never run.
     /// </summary>
-    private static IReadOnlyList<string>? PublishersForHost(string host)
+    private static VendorPolicy? GetVendorPolicy(string host)
     {
-        if (host.EndsWith("intel.com", StringComparison.OrdinalIgnoreCase)) return new[] { "Intel" };
-        if (host.EndsWith("amd.com", StringComparison.OrdinalIgnoreCase) ||
-            host.EndsWith("ati.com", StringComparison.OrdinalIgnoreCase))
-            return new[] { "Advanced Micro Devices", "AMD" };
-        if (host.EndsWith("nvidia.com", StringComparison.OrdinalIgnoreCase)) return new[] { "NVIDIA" };
-        if (host.EndsWith("realtek.com", StringComparison.OrdinalIgnoreCase)) return new[] { "Realtek" };
+        if (HostMatcher.IsDomainOrSubdomain(host, "intel.com"))
+            return new(new[] { "Intel" }, new[] { "intel.com" });
+
+        if (HostMatcher.IsDomainOrSubdomain(host, "amd.com") ||
+            HostMatcher.IsDomainOrSubdomain(host, "ati.com"))
+            return new(new[] { "Advanced Micro Devices", "AMD" }, new[] { "amd.com", "ati.com" });
+
+        if (HostMatcher.IsDomainOrSubdomain(host, "nvidia.com"))
+            return new(new[] { "NVIDIA" }, new[] { "nvidia.com" });
+
+        if (HostMatcher.IsDomainOrSubdomain(host, "realtek.com"))
+            return new(new[] { "Realtek" }, new[] { "realtek.com" });
+
         return null;
     }
 

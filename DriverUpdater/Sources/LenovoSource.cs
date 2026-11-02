@@ -26,6 +26,9 @@ public class LenovoSource : BaseSource
     /// <summary>Signers allowed to run a downloaded Lenovo installer.</summary>
     private static readonly string[] LenovoPublishers = { "Lenovo" };
 
+    /// <summary>Hosts the Lenovo download (including redirects) may use.</summary>
+    private static readonly string[] LenovoDownloadDomains = { "lenovo.com" };
+
     public override UpdateSource SourceType => UpdateSource.Lenovo;
     public override string DisplayName => "Lenovo (System Update)";
     public override string Description => "Official Lenovo catalog - drivers for ThinkPad/ThinkCentre/ThinkStation/IdeaPad/Yoga/Legion machines";
@@ -278,8 +281,7 @@ public class LenovoSource : BaseSource
                 return false;
             }
 
-            tempDir = Path.Combine(_settings.Settings.TempDirectory, $"lenovo_{update.Id[..Math.Min(40, update.Id.Length)]}");
-            Directory.CreateDirectory(tempDir);
+            tempDir = CreateTempDirectory("lenovo");
             var installerPath = Path.Combine(tempDir, Path.GetFileName(uri.LocalPath));
 
             progress?.Report(new InstallProgress(5, $"Downloading {update.Title}...", 0, 0));
@@ -297,7 +299,8 @@ public class LenovoSource : BaseSource
                             $"Downloading {update.Title}... {pct}%", 0, 0));
                     }
                 },
-                logger: _logger);
+                logger: _logger,
+                allowedDomains: LenovoDownloadDomains);
 
             ct.ThrowIfCancellationRequested();
             progress?.Report(new InstallProgress(52, "Verifying package...", 0, 0));

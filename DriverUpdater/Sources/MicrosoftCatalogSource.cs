@@ -14,6 +14,9 @@ public class MicrosoftCatalogSource : BaseSource
     private const string SearchUrl = "https://www.catalog.update.microsoft.com/Search.aspx";
     private const string DownloadUrl = "https://www.catalog.update.microsoft.com/DownloadDialog.aspx";
 
+    /// <summary>Hosts the Catalog download (including redirects) may use.</summary>
+    private static readonly string[] MicrosoftDownloadDomains = { "microsoft.com", "windowsupdate.com" };
+
     public override UpdateSource SourceType => UpdateSource.MicrosoftCatalog;
     public override string DisplayName => "Microsoft Update Catalog";
     public override string Description => "Official Microsoft driver catalog";
@@ -231,8 +234,7 @@ public class MicrosoftCatalogSource : BaseSource
 
             progress?.Report(new InstallProgress(10, "Downloading...", 0, 0));
 
-            tempDir = Path.Combine(_settings.Settings.TempDirectory, update.Id);
-            Directory.CreateDirectory(tempDir);
+            tempDir = CreateTempDirectory("catalog");
 
             var fileName = Path.GetFileName(new Uri(downloadUrl).LocalPath);
             var filePath = Path.Combine(tempDir, fileName);
@@ -257,7 +259,8 @@ public class MicrosoftCatalogSource : BaseSource
                             : 10 + (int)(80.0 * Math.Min(1.0, done / (50.0 * 1024 * 1024)));
                         progress?.Report(new InstallProgress(pct, text, done, total));
                     },
-                    logger: _logger);
+                    logger: _logger,
+                    allowedDomains: MicrosoftDownloadDomains);
             }
             catch (Exception ex)
             {

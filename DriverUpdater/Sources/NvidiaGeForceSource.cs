@@ -25,6 +25,9 @@ public class NvidiaGeForceSource : BaseSource
     /// <summary>Signers allowed to run a downloaded NVIDIA installer.</summary>
     private static readonly string[] NvidiaPublishers = { "NVIDIA" };
 
+    /// <summary>Hosts the NVIDIA download (including redirects) may use.</summary>
+    private static readonly string[] NvidiaDomains = { "nvidia.com" };
+
     // Product type IDs (from lookupValueSearch TypeID=1): value -> name keyword
     private static readonly (int ParentId, string[] Keywords, string Label)[] ProductTypes =
     {
@@ -356,14 +359,13 @@ public class NvidiaGeForceSource : BaseSource
         try
         {
             if (!Uri.TryCreate(update.DownloadUrl, UriKind.Absolute, out var uri) ||
-                !uri.Host.EndsWith("nvidia.com", StringComparison.OrdinalIgnoreCase))
+                !HostMatcher.IsAllowed(uri.Host, NvidiaDomains))
             {
                 _logger.LogError("NVIDIA install: unexpected download URL '{Url}'", update.DownloadUrl);
                 return false;
             }
 
-            tempDir = Path.Combine(_settings.Settings.TempDirectory, $"nv_{update.Version}");
-            Directory.CreateDirectory(tempDir);
+            tempDir = CreateTempDirectory("nvidia");
             var fileName = Path.GetFileName(uri.LocalPath);
             if (string.IsNullOrEmpty(fileName)) fileName = "nvidia_setup.exe";
             var filePath = Path.Combine(tempDir, fileName);
@@ -383,7 +385,8 @@ public class NvidiaGeForceSource : BaseSource
                             $"Downloading NVIDIA {update.Version}... {pct}%", pct, 100));
                     }
                 },
-                logger: _logger);
+                logger: _logger,
+                allowedDomains: NvidiaDomains);
 
             ct.ThrowIfCancellationRequested();
             progress?.Report(new InstallProgress(58, "Verifying installer...", 0, 0));

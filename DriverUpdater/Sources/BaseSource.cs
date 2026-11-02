@@ -45,19 +45,23 @@ public abstract class BaseSource : ISourcePlugin
         return av != null && iv != null && av > iv;
     }
 
+    /// <summary>
+    /// Allocates a fresh directory under the portable temp root. The name is
+    /// generated locally: never build it from remote ids or versions, which
+    /// could contain path separators or "..".
+    /// </summary>
+    protected string CreateTempDirectory(string prefix)
+        => SafeTemp.Create(_settings.Settings.TempDirectory, prefix);
+
+    /// <summary>
     /// Deletes a downloaded/extracted temp directory after an install attempt
-    /// (success or failure) so nothing is left on disk.
+    /// (success or failure) so nothing is left on disk. Refuses paths outside
+    /// the temp root.
+    /// </summary>
     protected void CleanupTemp(string? tempDir)
     {
-        if (string.IsNullOrWhiteSpace(tempDir) || !Directory.Exists(tempDir)) return;
-        try
-        {
-            Directory.Delete(tempDir, true);
+        if (string.IsNullOrWhiteSpace(tempDir)) return;
+        if (SafeTemp.TryDelete(_settings.Settings.TempDirectory, tempDir, _logger))
             _logger.LogInformation("Cleaned up temp directory: {Dir}", tempDir);
-        }
-        catch (Exception ex)
-        {
-            _logger.LogWarning(ex, "Failed to clean up temp directory: {Dir}", tempDir);
-        }
     }
 }

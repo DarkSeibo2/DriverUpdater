@@ -75,10 +75,21 @@ public static class ProcessRunner
             if (!timedOut) throw; // user cancellation propagates to the caller
         }
 
+        // Flush the async output handlers. A process that survived the kill
+        // (e.g. Kill threw because of access rights) must not block forever.
         try
         {
-            // Parameterless WaitForExit flushes the async output handlers
-            process.WaitForExit();
+            if (timedOut)
+            {
+                if (process.WaitForExit(5000))
+                    process.WaitForExit();
+                else
+                    logger?.LogError("Process {Exe} is still running 5 s after the kill request", psi.FileName);
+            }
+            else
+            {
+                process.WaitForExit();
+            }
         }
         catch { /* already dead */ }
 
@@ -93,11 +104,25 @@ public static class ProcessRunner
         try
         {
             process.Kill(entireProcessTree: true);
-            await process.WaitForExitAsync(CancellationToken.None);
         }
         catch (Exception ex)
         {
             logger?.LogWarning(ex, "Failed to kill process tree (pid {Pid})", process.Id);
+            return;
+        }
+
+        try
+        {
+            using var cts = new CancellationTokenSource(TimeSpan.FromSeconds(5));
+            await process.WaitForExitAsync(cts.Token);
+        }
+        catch (OperationCanceledException)
+        {
+            logger?.LogError("Process tree (pid {Pid}) did not exit within 5 s after kill", process.Id);
+        }
+        catch (Exception ex)
+        {
+            logger?.LogWarning(ex, "Error while waiting for killed process tree (pid {Pid})", process.Id);
         }
     }
 }
