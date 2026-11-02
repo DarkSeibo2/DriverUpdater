@@ -1,5 +1,9 @@
 version: 2
 
+# Patch/minor updates arrive as grouped PRs; major versions are deliberately
+# excluded because the app targets .NET 8 and the pinned runner images - a
+# major jump (e.g. System.Text.Json 8 -> 10, actions/checkout 4 -> 7) needs a
+# coordinated migration, not an auto-merge.
 updates:
   - package-ecosystem: nuget
     directory: "/"
@@ -14,9 +18,21 @@ updates:
         patterns:
           - "xunit*"
           - "Microsoft.NET.Test.Sdk"
+    ignore:
+      - dependency-name: "*"
+        update-types:
+          - "version-update:semver-major"
 
   - package-ecosystem: github-actions
     directory: "/"
     schedule:
       interval: weekly
     open-pull-requests-limit: 5
+    groups:
+      github-actions:
+        patterns:
+          - "*"
+    ignore:
+      - dependency-name: "*"
+        update-types:
+          - "version-update:semver-major"
