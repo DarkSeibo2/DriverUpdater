@@ -61,6 +61,43 @@ public class SecureDownloadTests : IDisposable
         }
     }
 
+    /// <summary>Content whose stream never produces a byte (a stalled server).</summary>
+    private sealed class StalledContent : HttpContent
+    {
+        protected override Task SerializeToStreamAsync(Stream stream, TransportContext? context)
+            => Task.CompletedTask;
+
+        protected override bool TryComputeLength(out long length)
+        {
+            length = 0;
+            return false;
+        }
+
+        protected override Task<Stream> CreateContentReadStreamAsync()
+            => Task.FromResult<Stream>(new StalledStream());
+    }
+
+    private sealed class StalledStream : Stream
+    {
+        public override bool CanRead => true;
+        public override bool CanSeek => false;
+        public override bool CanWrite => false;
+        public override long Length => throw new NotSupportedException();
+        public override long Position { get => 0; set => throw new NotSupportedException(); }
+
+        public override async ValueTask<int> ReadAsync(Memory<byte> buffer, CancellationToken cancellationToken = default)
+        {
+            await Task.Delay(Timeout.InfiniteTimeSpan, cancellationToken);
+            return 0;
+        }
+
+        public override int Read(byte[] buffer, int offset, int count) => throw new NotSupportedException();
+        public override long Seek(long offset, SeekOrigin origin) => throw new NotSupportedException();
+        public override void SetLength(long value) => throw new NotSupportedException();
+        public override void Write(byte[] buffer, int offset, int count) => throw new NotSupportedException();
+        public override void Flush() { }
+    }
+
     [Fact]
     public async Task DownloadsFileAndReportsProgress()
     {
@@ -179,6 +216,35 @@ public class SecureDownloadTests : IDisposable
         await Assert.ThrowsAsync<InvalidOperationException>(
             () => SecureDownload.DownloadToFileAsync(
                 Client(handler), "https://intel.com/file.bin", Destination));
+
+        Assert.False(File.Exists(Destination));
+    }
+
+    [Fact]
+    public async Task AbortsStalledBodyAfterIdleTimeoutAndDeletesFile()
+    {
+        var handler = new StubHandler(req => Response(req, new StalledContent()));
+
+        var ex = await Assert.ThrowsAsync<IOException>(
+            () => SecureDownload.DownloadToFileAsync(
+                Client(handler), "https://intel.com/file.bin", Destination,
+                idleTimeout: TimeSpan.FromMilliseconds(50)));
+
+        Assert.Contains("stalled", ex.Message, StringComparison.OrdinalIgnoreCase);
+        Assert.False(File.Exists(Destination));
+    }
+
+    [Fact]
+    public async Task ExplicitCancellationStillThrowsInsteadOfIdleTimeout()
+    {
+        var handler = new StubHandler(req => Response(req, new StalledContent()));
+        using var cts = new CancellationTokenSource(50);
+
+        await Assert.ThrowsAnyAsync<OperationCanceledException>(
+            () => SecureDownload.DownloadToFileAsync(
+                Client(handler), "https://intel.com/file.bin", Destination,
+                ct: cts.Token,
+                idleTimeout: TimeSpan.FromSeconds(30)));
 
         Assert.False(File.Exists(Destination));
     }

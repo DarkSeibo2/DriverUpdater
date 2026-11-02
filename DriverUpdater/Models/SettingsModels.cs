@@ -4,6 +4,8 @@ public record AppSettings
 {
     public bool CreateRestorePoint { get; set; } = true;
     public bool BackupDriversBeforeInstall { get; set; } = true;
+    /// <summary>Check certificate revocation (CRL/OCSP) during Authenticode verification.</summary>
+    public bool VerifyRevocation { get; set; } = false;
     public string BackupDirectory { get; set; } = "";
     public string DataDirectory { get; set; } = "";
     public string TempDirectory { get; set; } = "";

@@ -79,6 +79,58 @@ public class DriverPackageGateTests : IDisposable
         Assert.False(FileVerification.VerifyDriverPackageCatalogs(package, null, "Test"));
     }
 
+    [Fact]
+    public void VerifyDriverPackageCatalogs_RejectsSignedCatalogThatDoesNotCoverThePackage()
+    {
+        var sourceCat = FindSignedSystemCatalog();
+        if (sourceCat == null) return; // environment-specific
+
+        // A valid, trusted catalog is not enough: its member hashes must match
+        // the INF/SYS files that will be handed to pnputil.
+        var package = Path.Combine(_dir, "package");
+        Directory.CreateDirectory(package);
+        File.Copy(sourceCat, Path.Combine(package, "driver.cat"));
+        File.WriteAllText(Path.Combine(package, "driver.inf"), "[Version]\nSignature=\"$Windows NT$\"\n");
+
+        Assert.False(FileVerification.VerifyDriverPackageCatalogs(package, null, "Test"));
+    }
+
+    [Fact]
+    public void VerifyDriverPackageCatalogs_AcceptsRealSignedDriverPackage()
+    {
+        var repository = Path.Combine(Environment.SystemDirectory, "DriverStore", "FileRepository");
+        if (!Directory.Exists(repository)) return; // environment-specific
+
+        foreach (var dir in Directory.EnumerateDirectories(repository).Take(500))
+        {
+            var inf = Directory.EnumerateFiles(dir, "*.inf", SearchOption.TopDirectoryOnly).FirstOrDefault();
+            if (inf == null) continue;
+
+            var cat = Directory.EnumerateFiles(dir, "*.cat", SearchOption.TopDirectoryOnly).FirstOrDefault();
+            if (cat == null) continue;
+            if (!FileVerification.VerifyCatalogCoversFile(cat, inf, null)) continue;
+
+            // Copy the real pair into the temp package and run the full gate:
+            // signature + catalog membership must both pass.
+            var package = Path.Combine(_dir, "package");
+            Directory.CreateDirectory(package);
+            File.Copy(cat, Path.Combine(package, Path.GetFileName(cat)));
+            File.Copy(inf, Path.Combine(package, Path.GetFileName(inf)));
+
+            Assert.True(FileVerification.VerifyDriverPackageCatalogs(package, null, "Test"));
+            return;
+        }
+    }
+
+    private static string? FindSignedSystemCatalog()
+    {
+        var catRoot = Path.Combine(Environment.SystemDirectory, "CatRoot",
+            "{F750E6C3-38EE-11D1-85E5-00C04FC295EE}");
+        return Directory.Exists(catRoot)
+            ? Directory.EnumerateFiles(catRoot, "*.cat").FirstOrDefault()
+            : null;
+    }
+
     // ---------- Microsoft Catalog download URL parsing ----------
 
     [Theory]

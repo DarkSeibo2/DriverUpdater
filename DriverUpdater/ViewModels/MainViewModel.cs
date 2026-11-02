@@ -43,6 +43,10 @@ public partial class MainViewModel : ObservableObject
     private bool _backupDrivers = true;
 
     [ObservableProperty]
+    private bool _verifyRevocation;
+
+
+    [ObservableProperty]
     private string _excludedClasses = "";
 
     /// null = частичное выделение, bool = все/ничего
@@ -106,6 +110,7 @@ public partial class MainViewModel : ObservableObject
     {
         CreateRestorePoint = _settingsService.Settings.CreateRestorePoint;
         BackupDrivers = _settingsService.Settings.BackupDriversBeforeInstall;
+        VerifyRevocation = _settingsService.Settings.VerifyRevocation;
         ExcludedClasses = string.Join(", ", _settingsService.Settings.ExcludedDeviceClasses);
     }
 
@@ -156,6 +161,8 @@ public partial class MainViewModel : ObservableObject
         var settings = _settingsService.Settings;
         settings.CreateRestorePoint = CreateRestorePoint;
         settings.BackupDriversBeforeInstall = BackupDrivers;
+        settings.VerifyRevocation = VerifyRevocation;
+        FileVerification.EnableRevocationCheck = VerifyRevocation;
         settings.ExcludedDeviceClasses = ExcludedClasses
             .Split(new[] { ',', ';' }, StringSplitOptions.RemoveEmptyEntries)
             .Select(s => s.Trim())
@@ -319,6 +326,8 @@ public partial class MainViewModel : ObservableObject
         // Save current settings
         _settingsService.Settings.CreateRestorePoint = CreateRestorePoint;
         _settingsService.Settings.BackupDriversBeforeInstall = BackupDrivers;
+        _settingsService.Settings.VerifyRevocation = VerifyRevocation;
+        FileVerification.EnableRevocationCheck = VerifyRevocation;
         _settingsService.Settings.ExcludedDeviceClasses = ExcludedClasses
             .Split(new[] { ',', ';', ' ' }, StringSplitOptions.RemoveEmptyEntries)
             .ToList();

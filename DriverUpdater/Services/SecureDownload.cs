@@ -7,8 +7,11 @@ namespace DriverUpdater.Services;
 /// Hardened file download used by every source before an installer is run:
 ///  - HTTPS only (the scheme is re-checked AFTER redirects, so a redirect
 ///    cannot silently downgrade the transfer to http);
+///  - the final host must stay inside the caller's allowlist;
 ///  - a hard size limit enforced on the actual byte stream, not just the
 ///    (spoofable) Content-Length header;
+///  - an idle timeout, so a server that stops sending mid-body cannot hang
+///    the installer forever;
 ///  - the partial file is deleted on any failure, so a broken download can
 ///    never be mistaken for a package.
 /// </summary>
@@ -16,6 +19,9 @@ public static class SecureDownload
 {
     /// <summary>Default cap for driver installers and packages.</summary>
     public const long DefaultMaxBytes = 3L * 1024 * 1024 * 1024; // 3 GB
+
+    /// <summary>Maximum time between two received chunks.</summary>
+    public static readonly TimeSpan DefaultIdleTimeout = TimeSpan.FromSeconds(60);
 
     public static async Task DownloadToFileAsync(
         HttpClient client,
@@ -25,10 +31,15 @@ public static class SecureDownload
         CancellationToken ct = default,
         Action<long, long>? progress = null,
         ILogger? logger = null,
-        IReadOnlyCollection<string>? allowedDomains = null)
+        IReadOnlyCollection<string>? allowedDomains = null,
+        TimeSpan? idleTimeout = null)
     {
         if (!Uri.TryCreate(url, UriKind.Absolute, out var uri) || uri.Scheme != Uri.UriSchemeHttps)
             throw new InvalidOperationException($"Download URL must be HTTPS: '{url}'");
+
+        var idle = idleTimeout ?? DefaultIdleTimeout;
+        if (idle <= TimeSpan.Zero)
+            throw new ArgumentOutOfRangeException(nameof(idleTimeout), "Idle timeout must be positive");
 
         // The caller already matched the initial host; keep it inside the same
         // allowlist here so a direct call cannot bypass that check.
@@ -61,9 +72,26 @@ public static class SecureDownload
             await using (var target = File.Create(destinationPath))
             {
                 var buffer = new byte[1 << 16];
-                int read;
-                while ((read = await source.ReadAsync(buffer, ct)) > 0)
+                using var readCts = CancellationTokenSource.CreateLinkedTokenSource(ct);
+                while (true)
                 {
+                    // Reset the idle deadline for every chunk: a healthy slow
+                    // download keeps making progress, a stalled one is aborted.
+                    readCts.CancelAfter(idle);
+
+                    int read;
+                    try
+                    {
+                        read = await source.ReadAsync(buffer, readCts.Token);
+                    }
+                    catch (OperationCanceledException) when (!ct.IsCancellationRequested)
+                    {
+                        throw new IOException(
+                            $"Download stalled for more than {idle.TotalSeconds:0} s: '{url}'");
+                    }
+
+                    if (read == 0) break;
+
                     done += read;
                     if (done > maxBytes)
                         throw new InvalidOperationException(

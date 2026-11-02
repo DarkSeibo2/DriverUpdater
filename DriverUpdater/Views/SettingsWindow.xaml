@@ -37,6 +37,10 @@
             <TextBlock Text="Installation" Style="{StaticResource SectionHeader}" />
             <CheckBox Content="Create restore point before installing drivers" IsChecked="{Binding CreateRestorePoint}" Style="{StaticResource Row}" />
             <CheckBox Content="Backup current drivers before installing" IsChecked="{Binding BackupDrivers}" Style="{StaticResource Row}" />
+            <CheckBox Content="Check certificate revocation (slower, needs network)"
+                      IsChecked="{Binding VerifyRevocation}"
+                      ToolTip="Verifies CRL/OCSP for driver signatures. Can fail on isolated networks."
+                      Style="{StaticResource Row}" />
 
             <TextBlock Text="Exclusions" Style="{StaticResource SectionHeader}" />
             <TextBlock Text="Excluded device classes (comma-separated):" Foreground="{StaticResource TextSecondaryBrush}" Margin="0,0,0,4" />

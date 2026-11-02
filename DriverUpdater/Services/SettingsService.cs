@@ -20,6 +20,7 @@ public class SettingsService
         _settingsPath = Path.Combine(dataDir, "settings.json");
         Load();
         EnsurePortableLayout();
+        FileVerification.EnableRevocationCheck = _settings.VerifyRevocation;
     }
 
     /// Data must be portable: keep everything under <exe>\Data unless the user

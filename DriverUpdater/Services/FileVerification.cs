@@ -1,7 +1,9 @@
 using System.Runtime.InteropServices;
 using System.Security.Cryptography;
 using System.Security.Cryptography.X509Certificates;
+using System.Text.RegularExpressions;
 using Microsoft.Extensions.Logging;
+using Microsoft.Win32.SafeHandles;
 
 namespace DriverUpdater.Services;
 
@@ -9,11 +11,20 @@ namespace DriverUpdater.Services;
 /// Integrity checks before running downloaded installers:
 ///  1. Checksum verification (SHA-1/SHA-256 as published by the source)
 ///  2. Authenticode (WinVerifyTrust) signature check
+///  3. Publisher binding and catalog membership checks
 /// The app runs with admin rights and executes downloaded packages -
 /// downloads must be verified before anything is launched.
 /// </summary>
 public static class FileVerification
 {
+    /// <summary>
+    /// When true, WinVerifyTrust also checks the certificate chain for
+    /// revocation (CRL/OCSP). Off by default: the lookup needs network access
+    /// and can fail on isolated machines. Wired to the user setting
+    /// <see cref="Models.AppSettings.VerifyRevocation"/>.
+    /// </summary>
+    public static bool EnableRevocationCheck { get; set; }
+
     /// <summary>
     /// Verify the downloaded file against a hex checksum.
     /// Algorithm inferred from hex length (40 = SHA-1, 64 = SHA-256).
@@ -88,7 +99,7 @@ public static class FileVerification
             }
 
             var signer = GetSignerName(filePath);
-            if (signer == null || !keywords.Any(k => signer.Contains(k, StringComparison.OrdinalIgnoreCase)))
+            if (signer == null || !PublisherMatches(signer, keywords))
             {
                 logger?.LogError("Signature publisher mismatch for {File}: '{Signer}' does not match [{Keywords}]",
                     filePath, signer ?? "<none>", string.Join(", ", keywords));
@@ -131,7 +142,12 @@ public static class FileVerification
 
     /// <summary>
     /// Requires a driver package directory to contain at least one signed
-    /// catalog (.cat) and verifies every catalog found in it.
+    /// catalog (.cat), verifies every catalog signature, and proves that each
+    /// INF/SYS file is actually listed in one of those catalogs.
+    ///
+    /// Signature-only checks are not enough: a valid catalog signed by the
+    /// right vendor but containing unrelated hashes would otherwise pass, and
+    /// the INF/SYS files handed to pnputil would not be the signed ones.
     ///
     /// pnputil would reject unsigned INFs on x64, but checking explicitly stops
     /// unsigned or partially signed packages before anything is staged.
@@ -160,7 +176,157 @@ public static class FileVerification
             }
         }
 
+        // Every file pnputil would act on must be covered by a verified catalog.
+        var driverFiles = Directory.GetFiles(directory, "*.inf", SearchOption.AllDirectories)
+            .Concat(Directory.GetFiles(directory, "*.sys", SearchOption.AllDirectories));
+
+        foreach (var file in driverFiles)
+        {
+            // Hash each file once, then look it up in every catalog - packages
+            // can carry many catalogs and hundreds of SYS files.
+            var tags = ComputeCatalogTags(file);
+            if (!catFiles.Any(cat => CatalogContainsAnyTag(cat, tags, file, null)))
+            {
+                logger?.LogError("{Ctx}: '{File}' is not covered by any signed catalog (.cat)",
+                    context, Path.GetFileName(file));
+                return false;
+            }
+        }
+
         return true;
+    }
+
+    /// <summary>
+    /// Returns true when <paramref name="filePath"/> is a member of the given
+    /// catalog, i.e. its catalog hash matches a member entry in the .cat.
+    /// Both SHA-256 (modern driver catalogs) and SHA-1 (legacy ones) are tried.
+    /// </summary>
+    public static bool VerifyCatalogCoversFile(string catPath, string filePath, ILogger? logger)
+    {
+        try
+        {
+            var tags = ComputeCatalogTags(filePath);
+            return CatalogContainsAnyTag(catPath, tags, filePath, logger);
+        }
+        catch (Exception ex)
+        {
+            logger?.LogError(ex, "Catalog membership check failed for '{File}'", filePath);
+            return false;
+        }
+    }
+
+    private static bool CatalogContainsAnyTag(
+        string catPath, List<string> tags, string filePath, ILogger? logger)
+    {
+        if (tags.Count == 0)
+        {
+            logger?.LogWarning("Could not compute a catalog hash for '{File}'", filePath);
+            return false;
+        }
+
+        var catalog = CryptCATOpen(catPath, CryptCatOpenExisting, IntPtr.Zero,
+            CryptCatVersion1, Pkcs7AsnEncoding | X509AsnEncoding);
+        if (catalog == IntPtr.Zero)
+        {
+            logger?.LogWarning("Could not open catalog '{Cat}' (Win32={Code})",
+                catPath, Marshal.GetLastWin32Error());
+            return false;
+        }
+
+        try
+        {
+            foreach (var tag in tags)
+            {
+                // The returned pointer is owned by the catalog (mscat.h:
+                // "Do not free the returned pointer") - only the catalog
+                // handle is closed below.
+                if (CryptCATGetMemberInfo(catalog, tag) != IntPtr.Zero)
+                    return true;
+            }
+
+            logger?.LogError("Catalog '{Cat}' does not contain '{File}'",
+                Path.GetFileName(catPath), Path.GetFileName(filePath));
+            return false;
+        }
+        catch (Exception ex)
+        {
+            logger?.LogError(ex, "Catalog membership check failed for '{File}' in '{Cat}'",
+                filePath, catPath);
+            return false;
+        }
+        finally
+        {
+            CryptCATClose(catalog);
+        }
+    }
+
+    private static List<string> ComputeCatalogTags(string filePath)
+    {
+        var tags = new List<string>();
+
+        try
+        {
+            // SHA-256 first: that is what modern Windows driver catalogs use.
+            foreach (var algorithm in new[] { "SHA256", "SHA1" })
+            {
+                if (!CryptCATAdminAcquireContext2(out var admin, IntPtr.Zero, algorithm, IntPtr.Zero, 0))
+                    continue;
+
+                try
+                {
+                    using var stream = File.OpenRead(filePath);
+                    var hash = ComputeCatalogHash(admin, stream.SafeFileHandle);
+                    if (hash is { Length: > 0 })
+                        tags.Add(Convert.ToHexString(hash));
+                }
+                finally
+                {
+                    CryptCATAdminReleaseContext(admin, 0);
+                }
+            }
+        }
+        catch
+        {
+            // Unreadable/locked file: the caller reports "not covered".
+            tags.Clear();
+        }
+
+        return tags;
+    }
+
+    private static byte[]? ComputeCatalogHash(IntPtr admin, SafeFileHandle handle)
+    {
+        uint size = 0;
+        // The first call is expected to fail with ERROR_INSUFFICIENT_BUFFER and
+        // report the required buffer size.
+        CryptCATAdminCalcHashFromFileHandle2(admin, handle.DangerousGetHandle(), ref size, null, 0);
+        if (size == 0) return null;
+
+        var hash = new byte[size];
+        if (!CryptCATAdminCalcHashFromFileHandle2(admin, handle.DangerousGetHandle(), ref size, hash, 0))
+            return null;
+
+        return size == hash.Length ? hash : hash.AsSpan(0, (int)size).ToArray();
+    }
+
+    /// <summary>
+    /// Publisher keywords are matched on token boundaries, so "Microsoft"
+    /// matches "CN=Microsoft Windows, O=Microsoft Corporation" but not the
+    /// unrelated publisher "NotMicrosoft Ltd".
+    /// </summary>
+    internal static bool PublisherMatches(string? subject, IEnumerable<string> keywords)
+    {
+        if (string.IsNullOrWhiteSpace(subject)) return false;
+
+        foreach (var keyword in keywords)
+        {
+            if (string.IsNullOrWhiteSpace(keyword)) continue;
+            var pattern = $@"(?<![A-Za-z0-9]){Regex.Escape(keyword)}(?![A-Za-z0-9])";
+            if (Regex.IsMatch(subject, pattern, RegexOptions.IgnoreCase | RegexOptions.CultureInvariant))
+                return true;
+        }
+
+        return false;
     }
 
     /// <summary>Extensions that may be executed or handed to a driver installer.</summary>
@@ -278,8 +444,10 @@ public static class FileVerification
 
     // WINTRUST_ACTION_GENERIC_VERIFY_V2 = Authenticode (softpub.h)
     private static readonly Guid ActionGenericVerifyV2 = new("00AAC56B-CD44-11d0-8CC2-00C04FC295EE");
-    // DRIVER_ACTION_VERIFY = driver package / catalog policy (wintrust.h)
-    private static readonly Guid ActionDriverVerify = new("F750E6C3-3873-42EC-B154-58184A242A1E");
+    // DRIVER_ACTION_VERIFY = driver package / catalog policy (wintrust.h).
+    // This GUID also names the driver CatRoot store:
+    //   %SystemRoot%\System32\CatRoot\{F750E6C3-38EE-11D1-85E5-00C04FC295EE}
+    private static readonly Guid ActionDriverVerify = new("F750E6C3-38EE-11D1-85E5-00C04FC295EE");
 
     private static int VerifyAuthenticode(string filePath, Guid actionId)
     {
@@ -295,13 +463,13 @@ public static class FileVerification
             pPolicyCallbackData = IntPtr.Zero,
             pSIPClientData = IntPtr.Zero,
             dwUIChoice = 2,                     // WTD_UI_NONE
-            fdwRevocationChecks = 0,            // WTD_REVOKE_NONE (see TODO below)
+            fdwRevocationChecks = EnableRevocationCheck ? 1u : 0u, // WTD_REVOKE_WHOLECHAIN
             dwUnionChoice = 1,                  // WTD_CHOICE_FILE
             pFile = Marshal.AllocHGlobal(Marshal.SizeOf<WINTRUST_FILE_INFO>()),
             dwStateAction = 0,                  // WTD_STATEACTION_IGNORE
             hWVTStateData = IntPtr.Zero,
             pwszURLReference = IntPtr.Zero,
-            dwProvFlags = 0,
+            dwProvFlags = EnableRevocationCheck ? 0x40u : 0u, // WTD_REVOCATION_CHECK_CHAIN_EXCLUDE_ROOT
             dwUIContext = 0
         };
 
@@ -315,9 +483,48 @@ public static class FileVerification
             Marshal.FreeHGlobal(wtd.pFile);
         }
     }
-}
 
-// TODO(security): fdwRevocationChecks is WTD_REVOKE_NONE - revoked certificates
-// that are otherwise valid still pass. Switching to WTD_REVOKE_WHOLECHAIN would
-// enable CRL/OCSP checks but fails hard when the revocation servers are
-// unreachable; make it a user-visible setting before enabling it.
+    // ---------- Catalog API (wintrust.dll) ----------
+
+    private const uint CryptCatOpenExisting = 0x00000004; // CRYPTCAT_OPEN_EXISTING
+    private const uint CryptCatVersion1 = 0x00000100;     // CRYPTCAT_VERSION_1
+    private const uint Pkcs7AsnEncoding = 0x00010000;
+    private const uint X509AsnEncoding = 0x00000001;
+
+    [DllImport("wintrust.dll", SetLastError = true)]
+    [return: MarshalAs(UnmanagedType.Bool)]
+    private static extern bool CryptCATAdminAcquireContext2(
+        out IntPtr phCatAdmin,
+        IntPtr pgSubsystem,
+        [MarshalAs(UnmanagedType.LPWStr)] string pwszHashAlgorithm,
+        IntPtr pStrongHashPolicy,
+        uint dwFlags);
+
+    [DllImport("wintrust.dll", SetLastError = true)]
+    [return: MarshalAs(UnmanagedType.Bool)]
+    private static extern bool CryptCATAdminReleaseContext(IntPtr hCatAdmin, uint dwFlags);
+
+    [DllImport("wintrust.dll", SetLastError = true)]
+    [return: MarshalAs(UnmanagedType.Bool)]
+    private static extern bool CryptCATAdminCalcHashFromFileHandle2(
+        IntPtr hCatAdmin,
+        IntPtr hFile,
+        ref uint pcbHash,
+        [Out] byte[]? pbHash,
+        uint dwFlags);
+
+    [DllImport("wintrust.dll", SetLastError = true, CharSet = CharSet.Unicode)]
+    private static extern IntPtr CryptCATOpen(
+        string pwszFileName,
+        uint dwOpenFlags,
+        IntPtr hProv,
+        uint dwPublicVersion,
+        uint dwEncodingType);
+
+    [DllImport("wintrust.dll", SetLastError = true)]
+    [return: MarshalAs(UnmanagedType.Bool)]
+    private static extern bool CryptCATClose(IntPtr hCatalog);
+
+    [DllImport("wintrust.dll", SetLastError = true, CharSet = CharSet.Unicode)]
+    private static extern IntPtr CryptCATGetMemberInfo(IntPtr hCatalog, string pwszTag);
+}

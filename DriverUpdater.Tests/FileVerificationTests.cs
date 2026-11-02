@@ -99,25 +99,60 @@ public class FileVerificationTests : IDisposable
         Assert.False(FileVerification.HasValidSignature(dotnet, "NVIDIA", null));
     }
 
-    // ---------- install gate ----------
+    // ---------- publish matching ----------
 
-    private string? FindSystemCatalog()
+    [Theory]
+    [InlineData("CN=Microsoft Windows, O=Microsoft Corporation", "Microsoft", true)]
+    [InlineData("CN=NVIDIA Corporation", "NVIDIA", true)]
+    [InlineData("CN=Advanced Micro Devices, Inc.", "Advanced Micro Devices", true)]
+    [InlineData("CN=intel corporation", "Intel", true)]
+    // A publisher merely *containing* the keyword is not the vendor.
+    [InlineData("CN=NotMicrosoft Ltd", "Microsoft", false)]
+    [InlineData("CN=EvilIntel", "Intel", false)]
+    [InlineData("CN=Advanced Micro Devices, Inc.", "AMD", false)]
+    [InlineData("CN=AMD", "AMD", true)]
+    public void PublisherMatches_UsesTokenBoundaries(string subject, string keyword, bool expected)
+        => Assert.Equal(expected, FileVerification.PublisherMatches(subject, new[] { keyword }));
+
+    [Fact]
+    public void PublisherMatches_EmptyInputsDoNotMatch()
     {
-        // The CatRoot subfolder GUID is the DRIVER_ACTION_VERIFY policy id -
-        // every .cat there is a WHQL/Attestation-signed driver catalog.
+        Assert.False(FileVerification.PublisherMatches(null, new[] { "Microsoft" }));
+        Assert.False(FileVerification.PublisherMatches("", new[] { "Microsoft" }));
+        Assert.False(FileVerification.PublisherMatches("CN=Microsoft", Array.Empty<string>()));
+    }
+
+    // ---------- catalog membership (cat <-> INF/SYS binding) ----------
+
+    private static string? FindSystemCatalog()
+    {
         var catRoot = Path.Combine(Environment.SystemDirectory, "CatRoot",
-            "{F750E6C3-3873-42EC-B154-58184A242A1E}");
+            "{F750E6C3-38EE-11D1-85E5-00C04FC295EE}");
         if (!Directory.Exists(catRoot)) return null;
         return Directory.EnumerateFiles(catRoot, "*.cat").FirstOrDefault();
+    }
+
+    [Fact]
+    public void VerifyCatalogCoversFile_UnrelatedFileIsRejected()
+    {
+        var cat = FindSystemCatalog();
+        if (cat == null) return; // environment-specific
+
+        var unrelated = Path.Combine(_dir, "unrelated.bin");
+        File.WriteAllBytes(unrelated, RandomNumberGenerator.GetBytes(256));
+
+        Assert.False(FileVerification.VerifyCatalogCoversFile(cat, unrelated, null));
     }
 
     [Fact]
     public void VerifyCatalogSignature_SignedSystemCatalogPasses()
     {
         var cat = FindSystemCatalog();
-        if (cat == null) return; // environment-specific
+        if (cat == null) return;
         Assert.True(FileVerification.VerifyCatalogSignature(cat, null));
     }
+
+    // ---------- install gate ----------
 
     [Fact]
     public void VerifyInstallablePackage_NonExecutableExtensionFails()

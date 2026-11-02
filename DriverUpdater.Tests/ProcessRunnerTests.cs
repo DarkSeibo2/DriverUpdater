@@ -93,4 +93,34 @@ public class ProcessRunnerTests
         Assert.Equal(-1, result.ExitCode);
         Assert.False(string.IsNullOrWhiteSpace(result.Output));
     }
+
+    [Fact]
+    public async Task RunAsync_CapsCapturedOutput()
+    {
+        var result = await ProcessRunner.RunAsync(
+            Cmd("/c for /L %i in (1,1,3000) do @echo 0123456789012345678901234567890123456789"),
+            CancellationToken.None,
+            maxOutputChars: 200);
+
+        Assert.False(result.TimedOut);
+        Assert.Equal(0, result.ExitCode);
+        Assert.Contains("output truncated", result.Output);
+        Assert.True(result.Output.Length < 400,
+            $"Captured output was not capped: {result.Output.Length} chars");
+    }
+
+    [Fact]
+    public async Task RunAsync_TruncatesVeryLongSingleLine()
+    {
+        // cmd.exe command lines are limited to ~8191 chars, so 5000 is safe
+        // while still being longer than the per-line capture cap.
+        var bullet = new string('x', 5000);
+        var result = await ProcessRunner.RunAsync(
+            Cmd($"/c echo {bullet}"),
+            CancellationToken.None);
+
+        Assert.Equal(0, result.ExitCode);
+        Assert.DoesNotContain(bullet, result.Output);
+        Assert.True(result.Output.Length <= 4100);
+    }
 }

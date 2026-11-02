@@ -39,14 +39,19 @@ public class BackupService
             }
 
             var cancelReg = ct.Register(() => { try { process.Kill(entireProcessTree: true); } catch { } });
+            using var timeoutCts = CancellationTokenSource.CreateLinkedTokenSource(ct);
+            timeoutCts.CancelAfter(TimeSpan.FromMinutes(10));
             try
             {
-                await process.WaitForExitAsync(ct);
+                await process.WaitForExitAsync(timeoutCts.Token);
             }
             catch (OperationCanceledException)
             {
                 try { process.Kill(entireProcessTree: true); } catch { }
-                throw;
+                if (ct.IsCancellationRequested) throw;
+
+                _logger.LogError("Restore point creation timed out after 10 min");
+                return new InstallResult { Success = false, Message = "Restore point creation timed out" };
             }
             finally
             {
@@ -94,53 +99,33 @@ public class BackupService
                 RedirectStandardError = true
             };
 
-            using var process = System.Diagnostics.Process.Start(psi);
-            if (process == null)
+            // Export-WindowsDriver can run for a long time on a full driver
+            // store; the hard cap keeps a hung PowerShell from blocking the app.
+            var run = await ProcessRunner.RunAsync(psi, ct, timeoutMs: 60 * 60 * 1000, logger: _logger);
+
+            if (run.TimedOut)
             {
-                return new InstallResult { Success = false, Message = "Failed to start driver backup" };
+                _logger.LogError("Driver backup timed out after 60 min");
+                return new InstallResult { Success = false, Message = "Backup timed out after 60 min" };
             }
 
-            // Kill the whole process tree on cancellation
-            var cancelReg = ct.Register(() => { try { process.Kill(entireProcessTree: true); } catch { } });
-            var outputTask = process.StandardOutput.ReadToEndAsync();
-            var errorTask = process.StandardError.ReadToEndAsync();
-
-            try
+            if (!string.IsNullOrWhiteSpace(run.Output))
             {
-                await process.WaitForExitAsync(ct);
-            }
-            catch (OperationCanceledException)
-            {
-                try { process.Kill(entireProcessTree: true); } catch { }
-                throw;
-            }
-            finally
-            {
-                cancelReg.Dispose();
-            }
-            var output = await outputTask;
-            var error = await errorTask;
-
-            if (!string.IsNullOrEmpty(output))
-            {
-                _logger.LogInformation("Backup output: {Output}", output);
-                progress?.Report(output);
-            }
-            if (!string.IsNullOrEmpty(error))
-            {
-                _logger.LogWarning("Backup error: {Error}", error);
+                _logger.LogInformation("Backup output: {Output}", run.Output);
+                progress?.Report(run.Output);
             }
 
-            if (process.ExitCode == 0)
+            if (run.ExitCode == 0)
             {
                 _logger.LogInformation("Driver backup completed: {DestDir}", destDir);
                 return new InstallResult { Success = true, Message = $"Drivers backed up to {destDir}", LogPath = destDir };
             }
             else
             {
-                _logger.LogError("Driver backup failed with code {Code}: {Error}", process.ExitCode, error);
-                return new InstallResult { Success = false, Message = $"Backup failed (code {process.ExitCode}): {error}" };
+                _logger.LogError("Driver backup failed with code {Code}: {Error}", run.ExitCode, run.Output);
+                return new InstallResult { Success = false, Message = $"Backup failed (code {run.ExitCode}): {run.Output}" };
             }
+
         }
         catch (Exception ex)
         {
@@ -166,51 +151,30 @@ public class BackupService
                 RedirectStandardError = true
             };
 
-            using var process = System.Diagnostics.Process.Start(psi);
-            if (process == null)
+            var run = await ProcessRunner.RunAsync(psi, ct, timeoutMs: 30 * 60 * 1000, logger: _logger);
+
+            if (run.TimedOut)
             {
-                return new InstallResult { Success = false, Message = "Failed to start driver restore" };
+                _logger.LogError("Driver restore timed out after 30 min");
+                return new InstallResult { Success = false, Message = "Restore timed out after 30 min" };
             }
 
-            var cancelReg = ct.Register(() => { try { process.Kill(entireProcessTree: true); } catch { } });
-            var outputTask = process.StandardOutput.ReadToEndAsync();
-            var errorTask = process.StandardError.ReadToEndAsync();
-
-            try
+            if (!string.IsNullOrWhiteSpace(run.Output))
             {
-                await process.WaitForExitAsync(ct);
-            }
-            catch (OperationCanceledException)
-            {
-                try { process.Kill(entireProcessTree: true); } catch { }
-                throw;
-            }
-            finally
-            {
-                cancelReg.Dispose();
-            }
-            var output = await outputTask;
-            var error = await errorTask;
-
-            if (!string.IsNullOrEmpty(output))
-            {
-                _logger.LogInformation("Restore output: {Output}", output);
-                progress?.Report(output);
-            }
-            if (!string.IsNullOrEmpty(error))
-            {
-                _logger.LogWarning("Restore error: {Error}", error);
+                _logger.LogInformation("Restore output: {Output}", run.Output);
+                progress?.Report(run.Output);
             }
 
-            bool requiresReboot = process.ExitCode == 3010;
-            bool success = process.ExitCode == 0 || process.ExitCode == 3010;
+            bool requiresReboot = run.ExitCode == 3010;
+            bool success = run.ExitCode == 0 || run.ExitCode == 3010;
 
             return new InstallResult 
             { 
                 Success = success, 
-                Message = success ? "Drivers restored successfully" : $"Restore failed (code {process.ExitCode})",
+                Message = success ? "Drivers restored successfully" : $"Restore failed (code {run.ExitCode})",
                 RequiresReboot = requiresReboot
             };
+
         }
         catch (Exception ex)
         {

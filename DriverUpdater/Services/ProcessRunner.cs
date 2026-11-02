@@ -9,6 +9,8 @@ public sealed record ProcessRunResult(int ExitCode, string Output, bool TimedOut
 /// Runs external processes with hard cancellation semantics:
 ///  - stdout/stderr are collected with event-based async reads, so a chatty
 ///    installer cannot deadlock on full pipe buffers;
+///  - captured output is capped (line length and total size), so a runaway
+///    installer cannot exhaust memory;
 ///  - on timeout or cancellation the WHOLE process tree is killed
 ///    (installers routinely spawn child setup/msiexec processes that would
 ///    otherwise keep running after the app gave up);
@@ -16,12 +18,19 @@ public sealed record ProcessRunResult(int ExitCode, string Output, bool TimedOut
 /// </summary>
 public static class ProcessRunner
 {
+    /// <summary>Total captured output cap (stdout + stderr).</summary>
+    public const int DefaultMaxOutputChars = 512 * 1024;
+
+    /// <summary>Single line cap - some tools print one enormous line.</summary>
+    private const int MaxLineLength = 4096;
+
     public static async Task<ProcessRunResult> RunAsync(
         ProcessStartInfo psi,
         CancellationToken ct,
         int? timeoutMs = null,
         ILogger? logger = null,
-        Action<string>? onLine = null)
+        Action<string>? onLine = null,
+        int maxOutputChars = DefaultMaxOutputChars)
     {
         Process? process;
         try
@@ -35,13 +44,37 @@ public static class ProcessRunner
         }
         if (process == null) return new ProcessRunResult(-1, "", false);
 
+        maxOutputChars = Math.Max(0, maxOutputChars);
         var lines = new List<string>();
+        int keptChars = 0;
+        int droppedLines = 0;
+
         void OnData(string? line)
         {
             if (string.IsNullOrWhiteSpace(line)) return;
             line = line.Trim();
-            lock (lines) lines.Add(line);
-            try { onLine?.Invoke(line); } catch { /* progress reporting must not kill the run */ }
+            if (line.Length > MaxLineLength)
+                line = line[..MaxLineLength] + "…";
+
+            bool kept;
+            lock (lines)
+            {
+                kept = keptChars + line.Length <= maxOutputChars;
+                if (kept)
+                {
+                    lines.Add(line);
+                    keptChars += line.Length + Environment.NewLine.Length;
+                }
+                else
+                {
+                    droppedLines++;
+                }
+            }
+
+            if (kept)
+            {
+                try { onLine?.Invoke(line); } catch { /* progress reporting must not kill the run */ }
+            }
         }
         process.OutputDataReceived += (_, e) => OnData(e.Data);
         process.ErrorDataReceived += (_, e) => OnData(e.Data);
@@ -94,7 +127,12 @@ public static class ProcessRunner
         catch { /* already dead */ }
 
         string output;
-        lock (lines) output = string.Join(Environment.NewLine, lines);
+        lock (lines)
+        {
+            output = string.Join(Environment.NewLine, lines);
+            if (droppedLines > 0)
+                output += Environment.NewLine + $"[output truncated: {droppedLines} more line(s)]";
+        }
 
         return new ProcessRunResult(timedOut ? -2 : process.ExitCode, output, timedOut);
     }
