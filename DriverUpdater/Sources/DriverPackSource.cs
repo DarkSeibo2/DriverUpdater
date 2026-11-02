@@ -182,20 +182,10 @@ public class DriverPackSource : BaseSource
             // The package must carry signed driver catalogs before anything is
             // handed to pnputil - pnputil would refuse unsigned INFs on x64, but
             // the explicit check stops unsigned packages earlier and clearly.
-            var catFiles = Directory.GetFiles(extractDir, "*.cat", SearchOption.AllDirectories);
-            if (catFiles.Length == 0)
+            if (!FileVerification.VerifyDriverPackageCatalogs(extractDir, _logger, "DriverPack"))
             {
-                _logger.LogError("No signed driver catalog (.cat) in DriverPack package");
-                progress?.Report(new InstallProgress(90, "No signed driver catalog (.cat) in package", 0, 0));
+                progress?.Report(new InstallProgress(90, "Unsigned driver package (no valid .cat)", 0, 0));
                 return false;
-            }
-            foreach (var cat in catFiles)
-            {
-                if (!FileVerification.VerifyCatalogSignature(cat, _logger))
-                {
-                    progress?.Report(new InstallProgress(90, $"Unsigned driver catalog: {Path.GetFileName(cat)}", 0, 0));
-                    return false;
-                }
             }
 
             // Find INF files

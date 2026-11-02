@@ -505,22 +505,62 @@ public class VendorSource : BaseSource
                 logger: _logger,
                 allowedDomains: policy.Domains);
 
-            progress?.Report(new InstallProgress(82, "Verifying package...", 0, 0));
+            int exitCode;
+            var archived = false;
 
-            // We are about to execute this file with admin rights: checksum (when
-            // published) + Authenticode signature bound to the vendor's signer.
-            if (!FileVerification.VerifyInstallablePackage(filePath, update.FileChecksum, policy.Publishers, _logger, "Vendor"))
+            if (FileVerification.IsExecutablePackage(filePath))
             {
-                progress?.Report(new InstallProgress(95, "Package verification failed - installer not trusted", 0, 0));
+                progress?.Report(new InstallProgress(82, "Verifying package...", 0, 0));
+
+                // We are about to execute this file with admin rights: checksum (when
+                // published) + Authenticode signature bound to the vendor's signer.
+                if (!FileVerification.VerifyInstallablePackage(filePath, update.FileChecksum, policy.Publishers, _logger, "Vendor"))
+                {
+                    progress?.Report(new InstallProgress(95, "Package verification failed - installer not trusted", 0, 0));
+                    return false;
+                }
+
+                progress?.Report(new InstallProgress(85, "Running installer...", 0, 0));
+                exitCode = await RunInstallerAsync(filePath, ct);
+            }
+            else if (FileVerification.IsArchivePackage(filePath))
+            {
+                // A vendor zip is not Authenticode-signed as a whole. Trust is
+                // established from the signed .cat files inside, exactly like the
+                // DriverPack/Catalog path, and the INFs are installed by pnputil
+                // instead of executing arbitrary contents.
+                archived = true;
+                progress?.Report(new InstallProgress(82, "Extracting and verifying package...", 0, 0));
+
+                var extractDir = Path.Combine(tempDir, "extracted");
+                await SafeExtract.ExtractZipAsync(filePath, extractDir, _logger, cancellationToken: ct);
+
+                if (!FileVerification.VerifyDriverPackageCatalogs(extractDir, _logger, "Vendor"))
+                {
+                    progress?.Report(new InstallProgress(95, "Unsigned driver package (no valid .cat)", 0, 0));
+                    return false;
+                }
+
+                var infFiles = Directory.GetFiles(extractDir, "*.inf", SearchOption.AllDirectories);
+                if (infFiles.Length == 0)
+                {
+                    _logger.LogError("Vendor: no INF files found in archived package");
+                    progress?.Report(new InstallProgress(95, "No INF files in archived driver package", 0, 0));
+                    return false;
+                }
+
+                progress?.Report(new InstallProgress(85, "Installing driver via pnputil...", 0, 0));
+                exitCode = await RunPnputilAsync(extractDir, ct);
+            }
+            else
+            {
+                var ext = Path.GetExtension(filePath);
+                _logger.LogError("Vendor: unsupported package type '{Ext}' from '{Url}'", ext, update.DownloadUrl);
+                progress?.Report(new InstallProgress(95, $"Unsupported package type: {ext}", 0, 0));
                 return false;
             }
 
-            progress?.Report(new InstallProgress(85, "Running installer...", 0, 0));
-
-            // Run installer silently
-            var exitCode = await RunInstallerAsync(filePath, ct);
-            
-            if (exitCode == 0 || exitCode == 3010)
+            if (exitCode == 0 || exitCode == 3010 || (archived && exitCode == 259))
             {
                 progress?.Report(new InstallProgress(100, "Installation complete", 0, 0));
                 _logger.LogInformation("Vendor driver installed successfully (exit code: {Code})", exitCode);
@@ -567,6 +607,32 @@ public class VendorSource : BaseSource
             return new(new[] { "Realtek" }, new[] { "realtek.com" });
 
         return null;
+    }
+
+    private async Task<int> RunPnputilAsync(string extractDir, CancellationToken ct)
+    {
+        // Same pattern as the Catalog/DriverPack sources: full path from
+        // System32 + /subdirs so every INF package installs in one call.
+        var pnputil = Path.Combine(Environment.SystemDirectory, "pnputil.exe");
+        var psi = new System.Diagnostics.ProcessStartInfo
+        {
+            FileName = pnputil,
+            Arguments = $"/add-driver \"{extractDir}\\*.inf\" /subdirs /install",
+            UseShellExecute = false,
+            CreateNoWindow = true,
+            RedirectStandardOutput = true,
+            RedirectStandardError = true
+        };
+
+        var run = await ProcessRunner.RunAsync(psi, ct, timeoutMs: 20 * 60 * 1000, logger: _logger);
+        if (run.TimedOut)
+        {
+            _logger.LogError("Vendor: pnputil timed out after 20 min, process tree killed");
+            return -2;
+        }
+        if (!string.IsNullOrWhiteSpace(run.Output))
+            _logger.LogInformation("Vendor: pnputil output: {Out}", run.Output.Trim());
+        return run.ExitCode;
     }
 
     private async Task<int> RunInstallerAsync(string filePath, CancellationToken ct)

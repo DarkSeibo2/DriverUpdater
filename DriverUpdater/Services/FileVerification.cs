@@ -129,9 +129,53 @@ public static class FileVerification
         }
     }
 
+    /// <summary>
+    /// Requires a driver package directory to contain at least one signed
+    /// catalog (.cat) and verifies every catalog found in it.
+    ///
+    /// pnputil would reject unsigned INFs on x64, but checking explicitly stops
+    /// unsigned or partially signed packages before anything is staged.
+    /// </summary>
+    public static bool VerifyDriverPackageCatalogs(string directory, ILogger? logger, string context = "")
+    {
+        if (!Directory.Exists(directory))
+        {
+            logger?.LogError("{Ctx}: driver package directory does not exist: '{Dir}'", context, directory);
+            return false;
+        }
+
+        var catFiles = Directory.GetFiles(directory, "*.cat", SearchOption.AllDirectories);
+        if (catFiles.Length == 0)
+        {
+            logger?.LogError("{Ctx}: no signed driver catalog (.cat) in '{Dir}'", context, directory);
+            return false;
+        }
+
+        foreach (var cat in catFiles)
+        {
+            if (!VerifyCatalogSignature(cat, logger))
+            {
+                logger?.LogError("{Ctx}: unsigned driver catalog '{Cat}'", context, Path.GetFileName(cat));
+                return false;
+            }
+        }
+
+        return true;
+    }
+
     /// <summary>Extensions that may be executed or handed to a driver installer.</summary>
     public static readonly HashSet<string> ExecutablePackageExtensions =
         new(StringComparer.OrdinalIgnoreCase) { ".exe", ".msi", ".msu" };
+
+    /// <summary>Archive formats that contain a driver package (INF + .cat).</summary>
+    public static readonly HashSet<string> ArchivePackageExtensions =
+        new(StringComparer.OrdinalIgnoreCase) { ".zip" };
+
+    public static bool IsExecutablePackage(string filePath)
+        => ExecutablePackageExtensions.Contains(Path.GetExtension(filePath));
+
+    public static bool IsArchivePackage(string filePath)
+        => ArchivePackageExtensions.Contains(Path.GetExtension(filePath));
 
     /// <summary>
     /// The single gate every source must pass through before an installer is

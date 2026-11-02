@@ -320,20 +320,10 @@ public class MicrosoftCatalogSource : BaseSource
 
             // Catalog packages are WHQL-signed; verify every catalog before the
             // INFs are handed to pnputil (stops unsigned/staged packages early).
-            var catFiles = Directory.GetFiles(extractDir, "*.cat", SearchOption.AllDirectories);
-            if (catFiles.Length == 0)
+            if (!FileVerification.VerifyDriverPackageCatalogs(extractDir, _logger, "Catalog"))
             {
-                _logger.LogError("No signed driver catalog (.cat) in package");
-                progress?.Report(new InstallProgress(90, "No signed driver catalog (.cat) in package", 0, 0));
+                progress?.Report(new InstallProgress(90, "Unsigned driver package (no valid .cat)", 0, 0));
                 return false;
-            }
-            foreach (var cat in catFiles)
-            {
-                if (!FileVerification.VerifyCatalogSignature(cat, _logger))
-                {
-                    progress?.Report(new InstallProgress(90, $"Unsigned driver catalog: {Path.GetFileName(cat)}", 0, 0));
-                    return false;
-                }
             }
 
             progress?.Report(new InstallProgress(95, "Installing driver...", 0, 0));
@@ -370,6 +360,21 @@ public class MicrosoftCatalogSource : BaseSource
         }
     }
 
+    /// <summary>
+    /// Extracts the download URL from the Catalog dialog HTML.
+    ///
+    /// Only archives the install path can verify and install are accepted:
+    /// .exe/.msu entries are skipped on purpose because they would be executed
+    /// without an INF/.cat check.
+    /// </summary>
+    internal static string? ExtractDownloadUrl(string? html)
+    {
+        if (string.IsNullOrEmpty(html)) return null;
+
+        var match = Regex.Match(html, @"url\s*=\s*'(https://[^']+\.(cab|zip))'", RegexOptions.IgnoreCase);
+        return match.Success ? match.Groups[1].Value : null;
+    }
+
     private async Task<string?> GetDownloadUrlAsync(string updateId, CancellationToken ct)
     {
         try
@@ -383,12 +388,12 @@ public class MicrosoftCatalogSource : BaseSource
             var response = await _httpClient.PostAsync(DownloadUrl, content, ct);
             var html = await response.Content.ReadAsStringAsync(ct);
 
-            var match = Regex.Match(html, @"url\s*=\s*'(https://[^']+\.(cab|zip|exe|msu))'", RegexOptions.IgnoreCase);
-            DiagLog($"downloadUrl: updateId={updateId} htmlLen={html.Length} match={match.Success}");
-            if (match.Success)
+            var downloadUrl = ExtractDownloadUrl(html);
+            DiagLog($"downloadUrl: updateId={updateId} htmlLen={html.Length} found={downloadUrl != null}");
+            if (downloadUrl != null)
             {
-                DiagLog($"downloadUrl found: {match.Groups[1].Value}");
-                return match.Groups[1].Value;
+                DiagLog($"downloadUrl found: {downloadUrl}");
+                return downloadUrl;
             }
         }
         catch (Exception ex)

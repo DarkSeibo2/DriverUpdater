@@ -328,8 +328,48 @@ public class LenovoSource : BaseSource
 
             ct.ThrowIfCancellationRequested();
 
+            if (!Directory.Exists(extractDir))
+            {
+                _logger.LogError("Lenovo: package extraction produced no directory");
+                progress?.Report(new InstallProgress(95, "Package extraction failed", 0, 0));
+                return false;
+            }
+
+            // The extractor is a vendor tool, so the tree it produced is capped
+            // here (size + file count) before we search and execute anything.
+            try
+            {
+                SafeExtract.VerifyExtractedTree(extractDir);
+            }
+            catch (Exception ex)
+            {
+                _logger.LogError("Lenovo: extracted package exceeds limits: {Msg}", ex.Message);
+                progress?.Report(new InstallProgress(95, "Extracted package exceeds size limits", 0, 0));
+                return false;
+            }
+
             var infFiles = SafeFiles(extractDir, "*.inf");
             var dpinst = SafeFiles(extractDir, "dpinst.exe").FirstOrDefault();
+
+            // Signed catalogs must be present before any INF is handed to
+            // dpinst/pnputil - unsigned packages are rejected up front.
+            if (infFiles.Length > 0 &&
+                !FileVerification.VerifyDriverPackageCatalogs(extractDir, _logger, "Lenovo"))
+            {
+                progress?.Report(new InstallProgress(95, "Unsigned driver package (no valid .cat)", 0, 0));
+                return false;
+            }
+
+            // dpinst.exe is shipped inside the archive: verify its Authenticode
+            // signature (Microsoft for the tool itself, Lenovo for repackaged
+            // copies) before executing it with admin rights.
+            if (dpinst != null &&
+                !FileVerification.HasAnyTrustedSigner(dpinst, new[] { "Microsoft", "Lenovo" }, _logger))
+            {
+                _logger.LogError("Lenovo: dpinst.exe is not signed by Microsoft/Lenovo, falling back to pnputil");
+                progress?.Report(new InstallProgress(72, "dpinst.exe is not trusted - using pnputil", 0, 0));
+                dpinst = null;
+            }
 
             bool ok;
             if (dpinst != null)
